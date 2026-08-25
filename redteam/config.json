@@ -1,0 +1,32 @@
+{
+  "round": 1,
+  "routes": {
+    "blue": {
+      "provider": "",
+      "model": ""
+    },
+    "whitebox": {
+      "provider": "",
+      "model": ""
+    },
+    "blackbox": {
+      "provider": "",
+      "model": ""
+    }
+  },
+  "domains": [
+    "shake_settle",
+    "virial_pressure",
+    "pme_exclusions",
+    "net_charge",
+    "conditional_approximations"
+  ],
+  "thresholds": {
+    "seeded_capture_target": 0.9,
+    "max_whitebox_iters": 2,
+    "max_independence_overlap": 0.7
+  },
+  "cadence": {
+    "blackbox_round_days": 7
+  }
+}

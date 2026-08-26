@@ -1,8 +1,3 @@
-# Python
+.pi/
 __pycache__/
 *.pyc
-
-# 双红队 harness 运行时产物(轮次审计目录与状态机)
-# 如需把轮次产物作为合规证据入库,注释掉下面两行即可
-redteam/rounds/
-redteam/state.json

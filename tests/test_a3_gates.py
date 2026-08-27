@@ -145,11 +145,17 @@ def test_gate_max_initial_force():
 
 
 def test_gate_parameter_envelope():
+    from openmm import unit
     from .a1_harness import build_chain_system
     sys_, pos, meta = build_chain_system(4, seed=0)
     nb = [f for f in sys_.getForces()
           if isinstance(f, openmm.NonbondedForce)][0]
-    nb.setParticleParameters(0, 2.5, 0.3, 0.5)  # |q| > 1.5 e
+    q0 = nb.getParticleParameters(0)[0]
+    q1 = nb.getParticleParameters(1)[0]
+    nb.setParticleParameters(0, 2.5 * unit.elementary_charge,
+                             0.3 * unit.nanometer, 0.5 * unit.kilojoule_per_mole)
+    nb.setParticleParameters(1, q1 + q0 - 2.5 * unit.elementary_charge,
+                             0.3 * unit.nanometer, 0.5 * unit.kilojoule_per_mole)
     xml = openmm.XmlSerializer.serialize(sys_)
     ir = ingest_system_xml(xml)
     from opus.ingest import gate_parameter_envelope

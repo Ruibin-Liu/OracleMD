@@ -114,6 +114,15 @@ def ingest_system_xml(source: str) -> IRSystem:
                                           int(c.attrib["p2"]),
                                           float(c.attrib["d"])))
 
+    if nb is not None and nb.periodic and nb.ewald_alpha > 0:
+        qnet = float(sum(a.q.value for a in nb.atoms))
+        if abs(qnet) > 1e-6:
+            raise IngestError(
+                f"G5(net-charge): PME system has net charge {qnet:+.4f} e. "
+                "Neutralize (counter-ion) before ingest: our PME drops the "
+                "k=0 term without the neutralizing-background convention "
+                "(minefield #3; finite-size correction is a separate path)")
+
     return IRSystem(n_atoms, bonds, angles, torsions, nb, has_cm, box, masses,
                     constraints)
 

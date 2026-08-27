@@ -29,8 +29,9 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from .ir import (AngleTerm, AtomParams, BondTerm, ExceptionTerm, IRSystem,
-                 NonbondedParams, ParamExpr, TorsionTerm)
+from .ir import (AngleTerm, AtomParams, BondTerm, ConstraintTerm,
+                 ExceptionTerm, IRSystem, NonbondedParams, ParamExpr,
+                 TorsionTerm)
 
 UNSUPPORTED = {
     "CustomNonbondedForce", "CustomBondForce", "CustomAngleForce",
@@ -75,6 +76,7 @@ def ingest_system_xml(source: str) -> IRSystem:
         raise IngestError("G1: zero/negative mass or virtual site particle")
 
     bonds, angles, torsions = [], [], []
+    constraints = []
     nb = None
     has_cm = False
 
@@ -106,7 +108,14 @@ def ingest_system_xml(source: str) -> IRSystem:
         else:
             raise IngestError(f"G2: unknown force type <{t}>")
 
-    return IRSystem(n_atoms, bonds, angles, torsions, nb, has_cm, box, masses)
+    # <Constraints> is a top-level element, sibling of <Forces>
+    for c in root.findall("./Constraints/Constraint"):
+        constraints.append(ConstraintTerm(int(c.attrib["p1"]),
+                                          int(c.attrib["p2"]),
+                                          float(c.attrib["d"])))
+
+    return IRSystem(n_atoms, bonds, angles, torsions, nb, has_cm, box, masses,
+                    constraints)
 
 
 def _ingest_nonbonded(el, n_atoms) -> NonbondedParams:

@@ -107,6 +107,13 @@ class NonbondedParams:
 
 
 @dataclass
+class ConstraintTerm:
+    a: int
+    b: int
+    distance: float
+
+
+@dataclass
 class IRSystem:
     """Whole-system IR.  Positions carry named axes (atom, slot, xyz)."""
     n_atoms: int
@@ -117,6 +124,11 @@ class IRSystem:
     has_cm_remover: bool
     box: np.ndarray | None          # 3x3, rows are box vectors
     masses: np.ndarray
+    constraints: list[ConstraintTerm] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.constraints is None:
+            self.constraints = []
 
     def check(self) -> None:
         if self.nonbonded is not None and self.nonbonded.periodic:

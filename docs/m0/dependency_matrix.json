@@ -1,0 +1,29 @@
+{
+  "baseline_note": "无基线行免减:每格逐项声明。● 依赖, 明确不依赖, MISSING=CI 失败。",
+  "pillars": {
+    "P1": "Q24.40 力定点累加",
+    "P2": "Q16.48 电荷网格定点",
+    "P3": "counter RNG(稳定 atom ID + 绝对步)",
+    "P4": "固定归约形状(含 CCMA 固定迭代)",
+    "P5": "masking 位级严格"
+  },
+  "matrix": {
+    "M1":  {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"},
+    "M2":  {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"},
+    "M3":  {"P1": "yes", "P2": "yes", "P3": "no",  "P4": "yes", "P5": "no"},
+    "M4":  {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"},
+    "M5a": {"P1": "yes", "P2": "yes", "P3": "no",  "P4": "yes", "P5": "no"},
+    "M6":  {"P1": "yes", "P2": "yes", "P3": "no",  "P4": "yes", "P5": "no"},
+    "M6b": {"P1": "no",  "P2": "no",  "P3": "yes", "P4": "no",  "P5": "no"},
+    "M7":  {"P1": "yes", "P2": "no",  "P3": "no",  "P4": "yes", "P5": "yes"},
+    "M8":  {"P1": "yes", "P2": "no",  "P3": "no",  "P4": "yes", "P5": "yes"},
+    "M15": {"P1": "no",  "P2": "yes", "P3": "no",  "P4": "no",  "P5": "no"},
+    "M18": {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"},
+    "I-020": {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"},
+    "I-021": {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"},
+    "I-022": {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"},
+    "C1-rollback": {"P1": "yes", "P2": "yes", "P3": "yes", "P4": "yes", "P5": "yes"}
+  },
+  "aliases": {"M18": ["m2"]},
+  "reserved_ids": ["I-001", "I-011"]
+}

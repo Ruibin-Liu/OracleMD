@@ -68,11 +68,14 @@ class AlchemicalSystem:
 
     def __init__(self, base: IRSystem, alchemical_atoms, *,
                  softcore_lj=True, scale_charges=True,
-                 alch_alch_lj="full"):
+                 alch_alch_lj="full", alchemical_bonds=None):
         self.base = base
         self.alch = sorted(set(int(a) for a in alchemical_atoms))
         self.softcore_lj = softcore_lj
         self.scale_charges = scale_charges
+        # perturbed bonds: {bond_index: (kA, kB)} — k(λ) = kA + λ(kB-kA),
+        # r0 fixed (spec: 柔性微扰键; RBFE dual-topology groundwork)
+        self.alchemical_bonds = dict(alchemical_bonds or {})
         # decouple semantics (openmmtools default, spec §4.6 direction):
         # solute-internal LJ stays FULLY coupled at every λ; only
         # solute-environment sterics soften.  "all" = annihilate (alch-alch
@@ -80,16 +83,18 @@ class AlchemicalSystem:
         assert alch_alch_lj in ("full", "all")
         self.alch_alch_lj = alch_alch_lj
         nb = base.nonbonded
-        if nb is None:
-            raise ValueError("alchemical system requires nonbonded params")
-        self.q0 = np.array([a.q.value for a in nb.atoms])
-        self.sig0 = np.array([a.sigma.value for a in nb.atoms])
-        self.eps0 = np.array([a.epsilon.value for a in nb.atoms])
+        self.has_nb = nb is not None
+        self.q0 = (np.array([a.q.value for a in nb.atoms])
+                   if nb is not None else None)
+        self.sig0 = (np.array([a.sigma.value for a in nb.atoms])
+                     if nb is not None else None)
+        self.eps0 = (np.array([a.epsilon.value for a in nb.atoms])
+                     if nb is not None else None)
         self.alch_set = set(self.alch)
 
     def q_at(self, lam):
         q = self.q0.copy()
-        if self.scale_charges:
+        if self.scale_charges and self.q0 is not None:
             q[self.alch] *= lam
         return q
 
@@ -122,10 +127,36 @@ def single_point_lambda(alch: AlchemicalSystem, x: np.ndarray, lam: float,
         e_acc = EnergyAccumulator(R)
 
     from .bonded import bonded_terms_energy_forces
-    bonded_terms_energy_forces("bond", base.bonds, x, f_acc, e_acc)
+    if alch.alchemical_bonds:
+        # λ-interpolated bonds: k(λ) = kA + λ(kB-kA); ∂U/∂λ analytic
+        import dataclasses
+        plain = [t for i, t in enumerate(base.bonds)
+                 if i not in alch.alchemical_bonds]
+        bonded_terms_energy_forces("bond", plain, x, f_acc, e_acc)
+        for idx, (kA, kB) in alch.alchemical_bonds.items():
+            t = base.bonds[idx]
+            k_l = kA + lam * (kB - kA)
+            rij = x[t.atoms[1]] - x[t.atoms[0]]
+            r = np.sqrt(np.sum(rij * rij, axis=-1))
+            d = r - t.length.value
+            e_term = 0.5 * k_l * d ** 2
+            e_acc.add("HarmonicBondForce", e_term)
+            coef = k_l * d / r
+            fi = coef[:, None] * rij
+            f_acc.add_to(t.atoms[0], fi)
+            f_acc.add_to(t.atoms[1], -fi)
+            dUdl += np.sum(0.5 * (kB - kA) * d ** 2)
+    else:
+        bonded_terms_energy_forces("bond", base.bonds, x, f_acc, e_acc)
     bonded_terms_energy_forces("angle", base.angles, x, f_acc, e_acc)
     bonded_terms_energy_forces("torsion", base.torsions, x, f_acc, e_acc)
 
+    if not alch.has_nb:
+        return {"energies": {"HarmonicBondForce": 0.0},
+                "E": sum(e_acc.energies().values()),
+                "forces": f_acc.forces(),
+                "dUdl": dUdl / max(1, x.shape[1]),
+                "sticky_overflow": f_acc.acc.sticky_overflow}
     alpha = nb.ewald_alpha
     rc = nb.cutoff
     rc2 = rc * rc

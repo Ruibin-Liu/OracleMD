@@ -91,6 +91,9 @@ def _patched_base(alch, lam):
 
 
 def _run_hrex(n_states=4, n_steps=6000, swap_every=500, seed=5):
+    # swap_every=500 is valid for THIS fixture only: the HO with gamma=10/ps
+    # relaxes in ~100 steps.  Real systems (solvent dielectric response
+    # ~ps scale) need >=1000 steps (spec §8.2; CpHMD REX practice).
     alch, pos = _ho_system()
     k0, k1 = 2000.0, 8000.0
     lams = np.linspace(0, 1, n_states)

@@ -41,7 +41,11 @@
   实现证明只有定点能量使 M6 能量位级——f64 树是项序相关的)
 - M5a 前提登记(见 Q-009 §5)
 
-## 待窗口项(E0 时序类,不阻塞 M0 语义验收)
+## E0 时序类已落地(2026-08-28,A100,util 0–5% = USABLE)
 
-E0a(OpenMM mixed/double)、E0b-FFT/direct(η 矩阵)、E0d(f32 杠杆)——
-A100 看门狗已部署,结果落地后回填 Q-002/Q-004b/c。
+- **E0a**:OpenMM 8.2 mixed 341.7 vs double 136.0 ns/day @2fs(60k 原子,排除 JIT 中位数)⇒ fp64 损失 **2.51× < 3×** ⇒ **开放项 1 关闭:fp64 单路径保留**;136.0 ns/day 同时锚定 §10.3 硬地板基线(max 判别中 E0b-direct R=1 上界换算远低于它,intrinsic erfc 慢路径)。
+- **E0b-FFT**:128³ c2c per-transform ~0.28 ms 与 batch{1,4,8,16,48} 无关(~1.54–1.59 TFLOP/s,~480 GB/s,带宽受限)⇒ FFT 批量红利 ≈1.0。
+- **E0b-direct**:f64 R=1→48 = 14.0→29.5 Gpair/s(η 8.7%→18.3%,60 FLOP/对口径,intrinsic erfc)⇒ 直空间批量红利 **2.10×**(f64)/ 5.98×(f32)。
+- **E0d**:直空间 f32/f64 @batch48 = **2.84×**;FFT 带宽受限近无效 ⇒ 分部件加权 f32 杠杆 ~1.4× 量级。
+- 回填:spec v1.1.3 的 Q-004/Q-004b/c、§10 与 §13 开放项 1;Q-002 保持 provisional(微基准绝对值受 intrinsic erfc 压制,替换点推到 M2 生产内核查表 erfc 实测)。E0b-constr 分量未单测,并入 M2 归因。
+- 环境快照:A100 80GB PCIe,driver 580.105.08,CUDA 13.0,cuPy 14.2.0,OpenMM 8.2(envs/e0omm);原始日志 a100-pod `/root/e0_results.log`。

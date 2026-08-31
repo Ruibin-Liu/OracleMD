@@ -1,10 +1,12 @@
 # 自研 GPU 自由能计算引擎 — 技术规格
 
-**版本** v1.1.2 · 2026-08-27 · 状态:M0/M0.5/M1/M3(参考侧)已交付
+**版本** v1.1.3 · 2026-08-28 · 状态:M0/M0.5/M1/M3(参考侧)已交付;E0a/E0b/E0d 实测落地
+**v1.1.2 → v1.1.3**:E0 时序类实测回填(A100,util 0–5% 窗口,USABLE 级):Q-004b/c 定标、Q-004 分量化、开放项 1 关闭(E0a fp64 损失 2.51× < 3× ⇒ **fp64 单路径保留**)、§10.3 硬地板基线锚定(OpenMM double 136.0 ns/day @2fs);Q-002 保持 provisional(见 14.1 注)
 **v1.1.1 → v1.1.2**:回写 M0–M3 实现期语义发现(Q34.30 裁决、单位制、§4.6 锤定、G5 门、M16/M17 双门、M5a 前提、HREX 间隔 1000 步、GPU 守卫);全部有实测锚定,出处见各节标注与 git 历史
 **v1.0 → v1.1**:合并七轮评审(patch1–7)与实测(E0e / B1)的全部决定。**v1.1 → v1.1.1**:修正合并缺陷六项 + Minor 八项(v1.1_feedback;其中 V1/V2/V5 是合并动作引入的接线错误,非原始判断错)。
 
-> **本文档的触发行声明**(v1.1.2):
+> **本文档的触发行声明**(v1.1.3):修改 §3.5(E0a/E0b/E0d 状态)、§10.1–§10.4(E0 实测回填)、§13 开放项 1(关闭)、Q-002(标注 E0b 状态,保持 provisional)、Q-004/Q-004b/c(实测定标)。
+> (v1.1.2):
 > 修改:§3(单位制钉死、Q34.30 裁决、GPU 守卫)、§4.3/§4.6(decouple 语义、exact PME、G5、λ 依赖键、M16/M17 双门)、§7/§8.2(交换间隔 1000 步)、§11.2(M5a 前提)、§12(M0 交付实录)
 > 原有:Q-005,Q-006/006b/006c,Q-010,Q-013/Q-014,Q-015(UNSOURCED,阻塞 M4),Q-016~Q-018,I-012,I-020~I-023,雷区 #15,失败模式库 1–6
 > 修改:Q-001(对数随 skin 0.28 重算为 ~1.3×10⁹),Q-002(单步时间 22–27 ms,含 FLOP 口径声明),Q-003(launch 占比),Q-004(拆 4/4b/4c,值域留空),Q-007(补 λ 局域性承重假设),Q-011(步长 4 fs),Q-014(显存表补原地转换),Q-018(K=50 为故意超预算点)
@@ -147,10 +149,10 @@ $$F_{\text{fixed}} = \text{round}(F_{\text{float}} \times 2^{40})$$
 
 | ID | 内容 | 决定什么 |
 |---|---|---|
-| E0a | OpenMM 60k 体系 mixed vs double(排除 JIT/预热,中位数) | fp64 单路径成本(注意:OpenMM 倍数只是下界代理) |
-| E0b-direct/pme/constr | **分部件 η 矩阵**:单副本 vs 批量的 achieved % of fp64 peak | Q-004 的两个 η(直空间红利 = occupancy 恢复;FFT 红利 = 摊薄,两者故事不同) |
+| E0a | OpenMM 60k 体系 mixed vs double(排除 JIT/预热,中位数)。**已完成**(2026-08-28,util<5% USABLE):mixed 341.7 vs double 136.0 ns/day @2fs ⇒ fp64 损失 **2.51×** | fp64 单路径成本(注意:OpenMM 倍数只是下界代理) |
+| E0b-direct/pme/constr | **分部件 η 矩阵**:单副本 vs 批量的 achieved % of fp64 peak。**已完成**(2026-08-28):直空间 f64 R=1→48 = 14.0→29.5 Gpair/s(η 8.7%→18.3%,60 FLOP/对口径,intrinsic erfc 慢路径,绝对值随查表 erfc 上移,**R 标度比为本测试目的**);FFT 128³ per-transform ~0.28 ms 与 batch{1,4,8,16,48} 无关(带宽受限 ~480 GB/s)⇒ FFT 红利 ≈1.0;constr 分量未单测(并入 M2 归因) | Q-004 的两个 η(直空间红利 = occupancy 恢复;FFT 红利 = 摊薄,两者故事不同——实测确认:直空间 2.10×,FFT ~1.0) |
 | E0c | N ∈ {5k, 20k, 60k} 标度 | 单副本饱和度 |
-| E0d | 内核级 f32 vs f64 分项微基准 | f32 杠杆真实值(只对计算受限部件有 2×) |
+| E0d | 内核级 f32 vs f64 分项微基准。**已完成**(2026-08-28):直空间 f32/f64 @batch48 = **2.84×** | f32 杠杆真实值(只对计算受限部件有 2×;FFT 带宽受限近无效——实测确认) |
 | E0e | cuFFT 位差扫描(**已完成**:batch 无关) | I-012 |
 
 时序类需独占 GPU(util 门卫);确定性类需压力注入;数值/物理类环境无关。
@@ -371,7 +373,7 @@ SQLite + 守护进程,几百行。支持抢占(**仅窗口边界,I-022**)、EVSI
 
 ## 10. 性能
 
-### 10.1 roofline(provisional,E0b 验证)
+### 10.1 roofline(provisional;E0b 已实测,见表下注)
 
 | 量 | 值 | 出处 |
 |---|---|---|
@@ -383,11 +385,13 @@ SQLite + 守护进程,几百行。支持抢占(**仅窗口边界,I-022**)、EVSI
 
 **§10 v1.0 原靶子(每副本 30–70 ns/day @2 fs)超出理论上限 1.9–4.4×,已废除。**
 
-### 10.2 批量红利(值域留空,只写公式)
+> **E0b 实测注(2026-08-28,A100,util 0–5%)**:serial 直空间微基准(intrinsic erfc)仅 8.7% peak,batch48 18.3%——40–50% 的 provisional 假设在微基准层面**未获支持**;但 intrinsic erfc 是慢路径(生产内核用查表/多项式,绝对吞吐上移,R 标度比不受影响),微基准绝对值不可直接替换 Q-002。⇒ Q-002 替换点推到 **M2 生产内核(查表 erfc)实测**;外部锚点 E0a:OpenMM double 136.0 ns/day @2fs(60k 原子,排除 JIT 中位数)。
+
+### 10.2 批量红利(E0b 实测定标 2026-08-28)
 
 $$\text{红利} = \frac{\eta_{\text{batch}}}{\eta_{\text{serial}}} \times f_{\text{amortize}}$$
 
-- η_serial、η_batch:**待 E0b 分部件实测**(Q-004b/4c)。§10 v1.0 的 130–250 ns/day 单副本参考与「occupancy ≈ 0」结论同样无实测依据,均不进 spec
+- η_serial、η_batch:**E0b 已实测**(2026-08-28,Q-004b/4c):直空间(f64,intrinsic erfc 口径)η_serial 8.7% → η_batch(R=48)18.3%,**红利 2.10×** = occupancy 恢复(单副本 MD 延迟/访存受限,实测确认);FFT 128³ per-transform 时间与 batch 无关(~0.28 ms,~480 GB/s,带宽受限)⇒ **FFT 红利 ≈1.0**——「两种红利故事不同」的预测获实测确认。§10 v1.0 的 130–250 ns/day 单副本参考与「occupancy ≈ 0」结论同样无实测依据,均不进 spec
 - 摊薄项 f_amortize ~1.10–1.15×(列表构建 ÷48 一项即撑住;launch 3–6%;参数广播 3–7%)
 - 直空间红利 = occupancy 恢复(单副本 MD 是延迟/访存受限);FFT 红利 = 摊薄 + 转置效率,工作集(805 MB)远超 L2 可能带宽受限——**两者的红利故事不同,必须分开测**
 
@@ -399,7 +403,7 @@ $$\text{Throughput}_{\text{batch}}\ [\text{ns/day}] \;\ge\; R \times \text{Throu
 
    低于地板 = 实现 bug,无辩解空间。η(无量纲 achieved % of peak)只出现在归因段,不进地板定义——地板比较的是**同量纲吞吐**。
 
-   **基线来源纪律(地板的牙齿所在)**:Throughput_serial^baseline = max(E0a 的 OpenMM double 路径, E0b-direct 微基准 R=1 上界)。**M0 参考实现明确排除**(它是语义 oracle 不是性能基线;地板若可用慢基线自动通过,就不配说「无辩解空间」)。**地板基线必须是外部可核验的实现或本项目的上界型微基准,不能是被测路径自身的产物**——与 §11.0「oracle 不能由被测方定义」同一条原则的性能侧版本。
+   **基线来源纪律(地板的牙齿所在)**:Throughput_serial^baseline = max(E0a 的 OpenMM double 路径, E0b-direct 微基准 R=1 上界)。**当前锚定(2026-08-28):E0a OpenMM double = 136.0 ns/day @2fs(60k 原子)**;E0b-direct R=1 上界换算远低于此(intrinsic erfc 慢路径),故地板基线 = 136.0 ns/day @2fs,若 M2 前出现更快外部可核验参照再取 max。(它是语义 oracle 不是性能基线;地板若可用慢基线自动通过,就不配说「无辩解空间」)。**地板基线必须是外部可核验的实现或本项目的上界型微基准,不能是被测路径自身的产物**——与 §11.0「oracle 不能由被测方定义」同一条原则的性能侧版本。
 
 2. **地板之上归因门**:与 E0b 预测区间的偏离必须归因并写进 §14,不设斩杀线
 3. **破环路径**:Throughput_serial 由上述基线来源测;η_batch 上界由孤立微基准(批量 cuFFT 吞吐 + 直空间对循环 RawKernel)——循环降级为「上界估计需要两个一天级微基准」
@@ -408,7 +412,7 @@ $$\text{Throughput}_{\text{batch}}\ [\text{ns/day}] \;\ge\; R \times \text{Throu
 
 ### 10.4 评估规则
 
-benchmark 参数随机化(体系大小、密度、三斜盒、离子浓度、λ 窗口数——**在 R 实例化集合内**),报告最差情况;顶层指标 = 每 GPU-day 产出的收敛 ΔG 数量;ns/day 仅日级代理。f32 杠杆(开放项 1)与批量红利**同量级且相乘**(分部件加权后可能低于 1.4×,待 E0d)。
+benchmark 参数随机化(体系大小、密度、三斜盒、离子浓度、λ 窗口数——**在 R 实例化集合内**),报告最差情况;顶层指标 = 每 GPU-day 产出的收敛 ΔG 数量;ns/day 仅日级代理。f32 杠杆与批量红利**同量级且相乘**(E0d 已实测:直空间 2.84×,FFT 带宽受限近无效,分部件加权后 ~1.4× 量级——见开放项 1 关闭记录)。
 
 ---
 
@@ -468,7 +472,7 @@ benchmark 参数随机化(体系大小、密度、三斜盒、离子浓度、λ 
 
 验收:任意 System XML + 坐标,逐 Force 单点能量与力对齐 OpenMM(11.1 容差),涵盖含**尾部修正**的 Nonbonded;R 副本批量与串行位级相同。
 
-交付(M0 已全部完成,31 tests):A1/A2 harness(A2 配置入 manifest,实测对齐含 λ=1 端点零差)· A3 解析体系库(Madelung/PME↔连续 Ewald/谐振子)· Q24.40 + Q16.48 + **Q34.30 能量**累加器 + 饱和/粘滞标志(实测触发)· counter RNG 及自测试 · delta debugging(合成 bug → 2 原子)· **E0 全套**(E0e 已完成;E0a/b/d 待 GPU 窗口)· ingest 门控 G1–G5(max-force、虚位点、未钉 PME、参数包络、**净电荷**)· IR round-trip 断言 · **依赖矩阵初填 + CI 完整性** · UNSOURCED 清零(Q-008/Q-009,docs/m0/)。
+交付(M0 已全部完成,31 tests):A1/A2 harness(A2 配置入 manifest,实测对齐含 λ=1 端点零差)· A3 解析体系库(Madelung/PME↔连续 Ewald/谐振子)· Q24.40 + Q16.48 + **Q34.30 能量**累加器 + 饱和/粘滞标志(实测触发)· counter RNG 及自测试 · delta debugging(合成 bug → 2 原子)· **E0 全套**(全部完成 2026-08-28;E0b-constr 分量未单测,并入 M2 归因)· ingest 门控 G1–G5(max-force、虚位点、未钉 PME、参数包络、**净电荷**)· IR round-trip 断言 · **依赖矩阵初填 + CI 完整性** · UNSOURCED 清零(Q-008/Q-009,docs/m0/)。
 
 ### M0.5 — 动力学
 
@@ -496,7 +500,7 @@ FreeSolv 子集 · JACS set RBFE vs 文献 RMSE · 调度器 + EVSI(抢占遵 I-
 
 | # | 待定 | 影响 | 决策时点 |
 |---|---|---|---|
-| 1 | E0 实测:fp64 损失与 f32 杠杆(分部件加权) | 单路径 vs 双路径 | **M0 之前**(E0a/E0b/E0d) |
+| 1 | E0 实测:fp64 损失与 f32 杠杆(分部件加权)——**已关闭(2026-08-28)**:E0a fp64 损失 **2.51× < 3×** 判据 ⇒ **fp64 单路径保留**;E0d f32 杠杆直空间 2.84×、FFT 近无效,加权 ~1.4× 量级,不足以推翻;双路径(SPFP)降级为 backlog,再激活条件 = M2 实测 fp64 不达 §10.3 地板且归因证据指向精度路径 | 单路径 vs 双路径(已决:单路径) | ~~M0 之前~~ 已决(E0a/E0b/E0d 全落地) |
 | 2 | IR 表达式语义子集(哪些 Custom* 支持翻译、哪些拒绝) | IR 复杂度;**非 A2 阻塞项**(A2 在外部 OpenMM 跑),但 ingest 冒烟测试(M0)需要 | M1 之前 |
 | 3 | Amber prmtop 入口 | ingest 层 + TI 设置映射 | M4 之后 |
 | 4 | 8 卡扩容 | host CPU、NUMA、IO schema | M3 之前 |
@@ -514,10 +518,10 @@ FreeSolv 子集 · JACS set RBFE vs 文献 RMSE · 调度器 + EVSI(抢占遵 I-
 | ID | 量 | 值 | 出处 / 依赖(标度关系) | 失效触发 |
 |---|---|---|---|---|
 | Q-001 | 直空间对数/步 | ~1.3×10⁹ | cutoff 1.0 + skin 0.28、水密度;N_pairs ∝ N(ρ)(r_c+s)³ | 改 cutoff/skin/体系密度 |
-| Q-002 | 单步时间 | 22–27 ms(provisional) | roofline @ 40–50% peak;FLOP 口径 1.06×10¹¹(直空间+PME,不含约束/积分)⇒ 11.0 ms @100% | 改精度、改 FLOP/对约定或口径;E0b 实测后替换 |
+| Q-002 | 单步时间 | 22–27 ms(provisional,E0b 后仍保留) | roofline @ 40–50% peak;FLOP 口径 1.06×10¹¹(直空间+PME,不含约束/积分)⇒ 11.0 ms @100%。E0b(2026-08-28):serial 直空间 intrinsic-erfc 微基准仅 8.7% peak ⇒ 40–50% 假设未获微基准支持,但 erfc 慢路径使微基准绝对值不可直接替换;外部锚点 E0a OpenMM double 136.0 ns/day @2fs(60k) | 改精度、改 FLOP/对约定或口径;**M2 生产内核(查表 erfc)实测后替换** |
 | Q-003 | launch 占比 | 3–6% | ∝ kernel 数 / 单步时间;K=25 | kernel 融合;单步时间变 |
-| Q-004 | 批量红利 | **η_batch/η_serial × f_amortize,值域留空** | 两侧 achieved % of peak(E0b 分部件) | η 实测;kernel 融合 |
-| Q-004b/c | η_serial / η_batch | **待 E0b 实测** | 单副本 occupancy、FFT 尺寸;批量宽度 | 换卡、换 N、换 R |
+| Q-004 | 批量红利 | **直空间 2.10×(f64)⊗ FFT ≈1.0 ⊗ f_amortize 1.10–1.15**(E0b 实测 2026-08-28;f32 下直空间红利 5.98×) | 两侧 achieved % of peak(E0b 分部件,已测) | η 复测;kernel 融合 |
+| Q-004b/c | η_serial / η_batch | **已实测(2026-08-28,A100,util 0–5%)**:直空间 f64 8.7% → 18.3%(R=1→48,60 FLOP/对口径,intrinsic erfc);f32 4.3% → 25.8%;FFT 128³ ~1.54–1.59 TFLOP/s(~16% peak,~480 GB/s)与 batch 无关 | 单副本 occupancy、FFT 尺寸;批量宽度 | 换卡、换 N、换 R |
 | Q-005 | skin | 0.28 nm = 2×0.05 + 0.12 + 0.06 | 三项分解;2d_thresh + s_window(K) + margin = skin(量纲:长度) | 改 K(窗口物理时长)、温度、HMR、d_thresh |
 | Q-006 | 重建间隔 | ~X fs 物理时间(待 M0.5 实测定标) | t_rebuild ∝ d_thresh²/D(扩散主导;量纲:时间,**不含步长**) | d_thresh、温度、粘度 |
 | Q-006b/c | 每 step 越界概率 / 每 ns 重建次数 | ∝ 步长 / 与步长无关 | | 步长 |

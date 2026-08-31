@@ -215,6 +215,10 @@ def _rigid_water_system():
                            constraints=openmm.app.HBonds, rigidWater=True)
     nb = [f for f in sys_.getForces()
           if isinstance(f, openmm.NonbondedForce)][0]
+    # WARNING(2026-08-28, docs/m0/q006_rebuild.md): 0.35/nm 是单位错位——AMBER 的
+    # 0.35 Å⁻¹ = 3.5 nm⁻¹。本测试只跑 20 步 SHAKE 残差,α 值无关物理;但任何
+    # 动力学/物理用途必须 α ≈ 3.5/nm(erfc(3.5×rc)≈7e-6)。实测 α=0.35/nm 时
+    # 直空间静电在 rc=1.0 处被截 62%,水锁死不扩散(MSD 低 30×)。
     nb.setPMEParameters(0.35 / openmm.unit.nanometer, 16, 16, 16)
     pos = np.array(m.positions.value_in_unit(openmm.unit.nanometer))
     return sys_, pos

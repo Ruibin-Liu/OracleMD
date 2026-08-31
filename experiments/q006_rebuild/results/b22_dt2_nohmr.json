@@ -1,0 +1,14 @@
+{
+ "tag": "b22_dt2_nohmr",
+ "n_atoms": 1020,
+ "dt_fs": 2.0,
+ "hmr": false,
+ "n_hmr": 0,
+ "meas_ps": 100.0,
+ "episode_ps": 5.0,
+ "equil_ps": 40.0,
+ "wall_min": 8.230649737517039,
+ "n_renew": 9266,
+ "n_flags": 8873,
+ "openmm": "8.6"
+}

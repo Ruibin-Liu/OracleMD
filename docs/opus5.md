@@ -1,11 +1,13 @@
 # 自研 GPU 自由能计算引擎 — 技术规格
 
-**版本** v1.1.3 · 2026-08-28 · 状态:M0/M0.5/M1/M3(参考侧)已交付;E0a/E0b/E0d 实测落地
+**版本** v1.1.4 · 2026-08-28 · 状态:M0/M0.5/M1/M3(参考侧)已交付;E0a/E0b/E0d 实测落地;Q-015 清零(M4 阻塞解除)
+**v1.1.3 → v1.1.4**:Q-015 定标(docs/m0/q015_a4_criteria.md):A4 双门带量纲落地(A4-R 水合 RMSE ≤ 1.9 kcal/mol ∧ CI₉₅ ≤ 2.2;A4-B RBFE RMSE ≤ 1.35 ∧ CI₉₅ ≤ 1.60 ∧ 单靶哨兵 ≤ 2.0 ∧ r ≥ 0.5);文献链 Wang 2015/Harder 2016/Gapsys 2020/Transformato 2022 + FreeSolv 第一方重算(RMSE 1.542,n=642)
 **v1.1.2 → v1.1.3**:E0 时序类实测回填(A100,util 0–5% 窗口,USABLE 级):Q-004b/c 定标、Q-004 分量化、开放项 1 关闭(E0a fp64 损失 2.51× < 3× ⇒ **fp64 单路径保留**)、§10.3 硬地板基线锚定(OpenMM double 136.0 ns/day @2fs);Q-002 保持 provisional(见 14.1 注)
 **v1.1.1 → v1.1.2**:回写 M0–M3 实现期语义发现(Q34.30 裁决、单位制、§4.6 锤定、G5 门、M16/M17 双门、M5a 前提、HREX 间隔 1000 步、GPU 守卫);全部有实测锚定,出处见各节标注与 git 历史
 **v1.0 → v1.1**:合并七轮评审(patch1–7)与实测(E0e / B1)的全部决定。**v1.1 → v1.1.1**:修正合并缺陷六项 + Minor 八项(v1.1_feedback;其中 V1/V2/V5 是合并动作引入的接线错误,非原始判断错)。
 
-> **本文档的触发行声明**(v1.1.3):修改 §3.5(E0a/E0b/E0d 状态)、§10.1–§10.4(E0 实测回填)、§13 开放项 1(关闭)、Q-002(标注 E0b 状态,保持 provisional)、Q-004/Q-004b/c(实测定标)。
+> **本文档的触发行声明**(v1.1.4):修改 §11.1 A4(判据落地)、§14.1 Q-015(UNSOURCED → 定标)、§12 M4 交付行(判据已定标)、§14.6(UNSOURCED 清单)。新增数字断言全部落在 Q-015 行内(表外数字不受保护规则)。
+> (v1.1.3):修改 §3.5(E0a/E0b/E0d 状态)、§10.1–§10.4(E0 实测回填)、§13 开放项 1(关闭)、Q-002(标注 E0b 状态,保持 provisional)、Q-004/Q-004b/c(实测定标)。
 > (v1.1.2):
 > 修改:§3(单位制钉死、Q34.30 裁决、GPU 守卫)、§4.3/§4.6(decouple 语义、exact PME、G5、λ 依赖键、M16/M17 双门)、§7/§8.2(交换间隔 1000 步)、§11.2(M5a 前提)、§12(M0 交付实录)
 > 原有:Q-005,Q-006/006b/006c,Q-010,Q-013/Q-014,Q-015(UNSOURCED,阻塞 M4),Q-016~Q-018,I-012,I-020~I-023,雷区 #15,失败模式库 1–6
@@ -431,7 +433,7 @@ benchmark 参数随机化(体系大小、密度、三斜盒、离子浓度、λ 
 | A1 | OpenMM 逐 Force 能量与力(同 XML 同坐标) | rel < 10⁻¹⁰ ∨ abs < 10⁻⁸ |
 | A2 | openmmtools 全 u_kn 层,固定构象集,零动力学——**降级为 §4.6 冻结定义的外部见证**(配置含 alchemical_pme_treatment 等全部非默认选项,版本哈希入 spec 附录) | rel < 10⁻⁹ ∨ abs < 10⁻⁸ |
 | A3 | 解析解:谐振子 ΔG、Madelung、两态 BAR 理论方差、λ 路径无关性 | 精确 |
-| A4 | FreeSolv 实验值、JACS set 文献 RMSE | 统计一致性,**判据 `Q-015` UNSOURCED**(阻塞 M4):RMSE 阈值与置信区间待定,带量纲形式 |
+| A4 | FreeSolv 实验值、JACS set 文献 RMSE | 统计一致性,判据 `Q-015` **已定标**(2026-08-28,docs/m0/q015_a4_criteria.md):A4-R 水合 RMSE ≤ 1.9 kcal/mol(7.95 kJ/mol)∧ bootstrap95% 上界 ≤ 2.2 ∧ \|ME\| ≤ 0.6 ∧ r ≥ 0.8;A4-B RBFE RMSE ≤ 1.35 kcal/mol(5.65 kJ/mol)∧ CI₉₅ 上界 ≤ 1.60 ∧ 单靶哨兵 ≤ 2.0 ∧ r ≥ 0.5 ∧ CI₉₅ 下界 ≥ 0.25;percentile bootstrap 10⁴,单元 = 分子/扰动,种子入 manifest |
 | A5 | 守恒律:NVE 漂移(拆分,见 m4)、动量守恒、量纲 | 物理定律 |
 | A6 | **∂U/∂λ 逐分量中心差分**(多 λ 中间点) | rel < 10⁻⁶ |
 | A7a–d | HREX 系综级套件(§8.3) | 解析 / KS(统计地板门,基线与 manifest 绑定) |
@@ -492,7 +494,7 @@ HREX(2×24 + Gibbs 全对)· u_kn 落库 schema · λ-dynamics/MSλD + ALF(与 H
 
 ### M4 — 生产验证
 
-FreeSolv 子集 · JACS set RBFE vs 文献 RMSE · 调度器 + EVSI(抢占遵 I-022)。
+FreeSolv 子集 · JACS set RBFE vs 文献 RMSE(判据 Q-015 已定标,docs/m0/q015_a4_criteria.md;M4 阻塞解除,执行等 GPU 窗口)· 调度器 + EVSI(抢占遵 I-022)。
 
 ---
 
@@ -533,7 +535,7 @@ FreeSolv 子集 · JACS set RBFE vs 文献 RMSE · 调度器 + EVSI(抢占遵 I-
 | Q-012 | 预平衡开销 | 1.3% | 5λ × 500 ps @ 单副本 fp64 | λ 点数、单副本速度 |
 | Q-013 | 定点网格显存 | 805 MB | 128³ × 48 × int64 | 盒尺寸、R |
 | Q-014 | 显存合计 | ~7–9 GB | §2.2 表 | 上述各项 |
-| Q-015 | A4 判据(FreeSolv/JACS 的 RMSE 阈值与置信区间,带量纲) | **UNSOURCED** | 阻塞 M4(非 M0) | — |
+| Q-015 | A4 判据(FreeSolv/JACS 的 RMSE 阈值与置信区间,带量纲) | **已定标(2026-08-28)**:A4-R RMSE ≤ 7.95 kJ/mol(1.9 kcal)∧ CI₉₅ ≤ 9.20;A4-B RMSE ≤ 5.65 kJ/mol(1.35 kcal)∧ CI₉₅ ≤ 6.69 ∧ 单靶 ≤ 8.37 ∧ r ≥ 0.5 | docs/m0/q015_a4_criteria.md:Wang 2015 AUE 0.925±0.041 kcal(OPLS2.1)、Gapsys 2020 FEP+/pmx 0.875/0.856、Transformato RMSE 1.18 [0.98;1.38](开源梯);FreeSolv 第一方 GAFF 基线 RMSE 1.542(n=642);RMSE/MUE 换算 1.35–1.40 | 换 FF;换实验参考版本;子集/扰动集变更;n 或靶数跌破下限(30/3 靶;水合 50);bootstrap 法变更;**只许收紧或换锚,不许因首轮不过而放宽** |
 | Q-016 | CCMA 迭代数 | ingest 定标入 manifest | 4 fs 下重定标(M0.5) | 步长、体系 |
 | Q-017 | NVE 漂移阈值 @4fs | < 0.01 k_BT/ns/dof(归因门) | m4b | HMR 因子、约束方案 |
 | Q-018 | K | 25(捕获期参数);**扫描集 {1,5,25,50} 中 50 为故意超预算点**(触发回滚,保住 M2 的回滚覆盖) | 窗口物理时长 = K × 步长 = 100 fs;依赖 I-021 | 改步长须重算;从扫描集删 K=50 会静默失去回滚覆盖 |
@@ -601,7 +603,7 @@ FreeSolv 子集 · JACS set RBFE vs 文献 RMSE · 调度器 + EVSI(抢占遵 I-
 
 - **patch header 触发行声明**:新增/修改/回查未受影响的 Q-xxx/I-xxx 逐条列出,未列全不予合入
 - **CI 反向索引**:从声明提取被改量,反查以其为触发条件的行,要求显式声明处置
-- **UNSOURCED 阻塞**:CI 检查表中 UNSOURCED 行数;Q-008/Q-009/Q-010 类阻塞 M0,**Q-015 阻塞 M4**
+- **UNSOURCED 阻塞**:CI 检查表中 UNSOURCED 行数;Q-008/Q-009/Q-010 类阻塞 M0,Q-015 阻塞 M4——**已清零(2026-08-28,docs/m0/q015_a4_criteria.md),全表无 UNSOURCED 残留**
 - **合并稿适用完整流程 + 交叉引用一致性检查**:任何形如「这也是 X 的理由」的跨节引用,两侧必须同时列出被引用的**前提**(而非结论),CI 检查前提文本一致——V1(零分歧引用)即此类缺陷的首个回归用例
 - **表外数字不受保护**:§10/§11 正文中的每个数字断言/不等式,要么提升为 Q-xxx(推荐,失效触发自动连入反向索引),要么显式标 `non-load-bearing`;两者皆无 = CI 失败
 - **error ≠ fail**:基线/manifest 不匹配报 error(无法判定),断言不成立报 fail

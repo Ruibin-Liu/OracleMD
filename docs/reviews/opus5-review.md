@@ -456,3 +456,23 @@ A100 看门狗(168h 窗口)于 14:31 捕获 util<5% 窗口完成 E0a 与 E0b-FFT
 - Q-002 保持 provisional:40–50% peak 假设未获微基准支持(serial 直空间仅 8.7%),但 intrinsic erfc 压制绝对值,替换点推到 M2 生产内核(查表 erfc)实测。这本身是一次有效的失效触发演练——触发条件「E0b 实测后替换」被捕获并按归因路径处理,而非静默替换。
 - E0b-constr 分量未单测,并入 M2 归因段。E0c(N 标度)未执行,不阻塞当前门。
 - 回填同步:`docs/m0/feasibility.md` 末节、`experiments/e0/README.md`。
+
+---
+
+# Q-015 溯源定标(2026-08-28)
+
+GPU 不可用窗口的非 GPU 项:Q-015(A4 判据 UNSOURCED,阻塞 M4)清零。方法与 E0 同纪律:全部数字一手可核验或双源交叉。
+
+## 取证路径(记录两个教训)
+
+- ACS/RSC 原文 403、PMC 网页 JS 渲染、Springer FreeSolv 全文付费墙、fetch 存储 findText 失灵——最终通道:**Europe PMC REST 全文 XML**(Gapsys 2020)+ **Semantic Scholar API**(摘要/元数据)+ **直接下载 FreeSolv 数据库本体自算**。
+- FreeSolv 论文常被引的「实验不确定度 ~0.6 kcal/mol」实为 **71%(459/642)的缺省赋值**(非缺省 183 个中位 0.20)——典型 I-012 式实测锚定:引文数字 ≠ 实测数字。已登记为不得作判据锚点。
+
+## 定标结果(spec v1.1.4,docs/m0/q015_a4_criteria.md)
+
+- **A4-R 水合门**:RMSE ≤ 1.9 kcal/mol ∧ CI₉₅ ≤ 2.2 ∧ |ME| ≤ 0.6 ∧ r ≥ 0.8(n ≥ 50,子集冻结入 manifest)。锚:FreeSolv DB v0.52 自带 GAFF 计算列第一方重算 RMSE 1.542(n=642)。
+- **A4-B RBFE 门**:RMSE ≤ 1.35 kcal/mol ∧ CI₉₅ 上界 ≤ 1.60 ∧ 单靶哨兵 ≤ 2.0 ∧ r ≥ 0.5 ∧ CI₉₅ 下界 ≥ 0.25(n ≥ 30 ∧ ≥ 3 靶)。锚:Wang 2015 AUE 0.925±0.041(Gapsys 转引)/Gapsys 2020 FEP+ 0.875±0.033 / pmx consensus 0.856–0.884 / Transformato RMSE 1.18 [0.98;1.38](开源梯)。
+- 方法:percentile bootstrap 10⁴,单元 = 分子/扰动,counter RNG 种子入 manifest;估计器统计不确定度与重采样 CI 分开报。
+- 登记假设:RMSE/MUE 换算 1.35–1.40(两独立实测一致);只许收紧不许放宽(判据先于数据冻结,与 #014 instantiation gate 同原则)。
+
+M4 阻塞解除(执行仍等 GPU)。spec 全表无 UNSOURCED 残留。

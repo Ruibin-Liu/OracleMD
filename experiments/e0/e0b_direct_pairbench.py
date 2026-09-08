@@ -39,8 +39,10 @@ extern "C" __global__ void pairs_f64(
             double s = 0.5*(si+sig[j]), e = sqrt(ei*eps[j]);
             double sr2 = s*s*invr2, sr6 = sr2*sr2*sr2;
             double flj = 24.0*e*(2.0*sr6*sr6 - sr6)*invr2;
-            double fc = qi*q[j]*invr2*(erfc(alpha*invr)*invr
-                        + 2.0*alpha*0.5641895835477563*exp(-alpha*alpha*r2));
+            // 2026-09-01 修正: erfc 自变量应为 alpha*r(原误为 alpha*invr,计
+            // 时结论不受影响——两条路径同错;数值语义由 e0f 的 xcheck 抓出)
+            double fc = qi*q[j]*(erfc(alpha/invr)*invr2
+                        + 2.0*alpha*0.5641895835477563*exp(-alpha*alpha*r2)*invr);
             double f = flj + fc;
             fx += f*dx; fy += f*dy; fz += f*dz;
         }

@@ -110,6 +110,20 @@ class TestBspline4Weights:
             worst = max(worst, float(np.abs(self._w4(s) - ref).max()))
         assert worst < 1e-14, f"max |diff| {worst:.2e}"
 
+    def test_kernel_weights4_anchors_complete(self):
+        """anchor[1..3] must be assigned — the uninitialized-anchor bug
+        (e0h/e0h2, caught by per-point numpy oracle after the SUM check
+        passed vacuously) must never return."""
+        for path in (SRC_F, SRC_H):
+            if not path.exists():
+                continue
+            src = path.read_text(encoding="utf-8")
+            for m in re.finditer(r"void weights4\(.*?\n\}", src, re.S):
+                body = m.group(0)
+                for i in (1, 2, 3):
+                    assert f"anchor[{i}] =" in body, (
+                        f"{path.name}: weights4 anchor[{i}] never assigned")
+
     def test_kernel_weights4_matches_this_file(self):
         """The kernel's weights4 expression must equal the formulas above
         (parsed from CUDA source — transcription tripwire)."""
@@ -122,3 +136,15 @@ class TestBspline4Weights:
         assert body.count("2.0 / 3.0") == 1
         assert body.count("0.5 * s") >= 2
         assert body.count("1.0 / 6.0") == 3
+
+
+class TestKernelSourceHygiene:
+    """NVRTC writes sources as ASCII — non-ASCII in any bench SRC is a
+    guaranteed runtime failure (struck three times 2026-09). Tripwire."""
+
+    def test_bench_src_strings_ascii(self):
+        for path in sorted(E0_DIR.glob("e0*.py")):
+            text = path.read_text(encoding="utf-8")
+            for m in re.finditer(r'SRC = r?"""(.*?)"""', text, re.S):
+                bad = [c for c in m.group(1) if ord(c) > 127]
+                assert not bad, f"{path.name}: non-ASCII in SRC: {bad[:3]!r}"

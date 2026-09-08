@@ -32,7 +32,7 @@ __device__ __forceinline__ void weights4(double frac, int* anchor, double w[4]) 
     //   c2 = 1/6 + s/2 + s^2/2 - s^3/2, c3 = s^3/6
     double x = frac * NG;
     int k = (int)x;
-    anchor[0] = k - 1;
+    anchor[0] = k - 1; anchor[1] = k; anchor[2] = k + 1; anchor[3] = k + 2;
     double s = x - k;
     double om = 1.0 - s;
     w[0] = om * om * om * (1.0 / 6.0);
@@ -66,7 +66,7 @@ extern "C" __global__ void spread(
             int yy = (ay[dy]) & (NG - 1), zz = (az[dz]) & (NG - 1);
             for (int dx = 0; dx < 4; ++dx) {
                 int xx = ax[dx] & (NG - 1);
-                long long dep = (long long)((wx[dx] * wyz) * 4503599627370496.0);
+                long long dep = (long long)((wx[dx] * wyz) * 281474976710656.0);
                 atomicAdd(reinterpret_cast<unsigned long long*>(
                               &g[((long long)yy * NG + zz) * NG + xx]),
                           (unsigned long long)dep);
@@ -102,7 +102,7 @@ extern "C" __global__ void interp(
                 acc += (double)g[((long long)yy * NG + zz) * NG + xx] * (wx[dx] * wyz);
             }
         }
-    F[a * R + r] = acc * q[a] * (1.0 / 4503599627370496.0);
+    F[a * R + r] = acc * q[a] * (1.0 / 281474976710656.0);
 }
 """
 
@@ -162,7 +162,7 @@ g2 = grid.copy()
 same = cp.array_equal(g1, g2)
 print(f"determinism (int64 atomicAdd x2): bitwise identical = {same}")
 # 电荷守恒: Σ grid / 2^48 ≈ R * Σ q (权重和 = 1/原子/维... 每原子 Σ(wx*wy*wz)=1)
-tot = g1.sum() / 4503599627370496.0
+tot = g1.sum() / 281474976710656.0
 target = R * float(q.sum())
 print(f"charge conservation: {tot:.6f} vs {target:.6f} (rel {abs(tot-target)/abs(target):.2e})")
 

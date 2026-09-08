@@ -413,7 +413,7 @@ $$\text{红利} = \frac{\eta_{\text{batch}}}{\eta_{\text{serial}}} \times f_{\te
    |---|---|---|---|
    | 直空间(共享列表 + poly-erfc + 乘 0 mask) | **16.0** | 1.5 | E0g k2 合规形态(87.3 list-Gp/s ≡ 37.4 计算对 Gp/s;阶梯 naive→算术重构→预折叠) |
    | PME-FFT(48×128³ c2c 正+逆) | **13.3** | 1.5 | E0b-FFT batch=48(0.277 ms/transform;位级无关 E0e) |
-   | PME 铺展+清零(Q16.48 int64 atomic) | **10.7** | 1.5 | E0h(17.2 G-atomic/s;柱 2 GPU 端位级验证 bitwise ✓;电荷守恒 5.9e-14) |
+   | PME 铺展+清零(Q16.48,cell 排序 + shared tile) | **4.7** | 1.5 | E0h2(2.78× vs 全局原子 v1 13.0;bitwise oracle v1≡tile ✓;确定性 ✓;电荷三方一致;E0h 原 10.7 ms 为 anchor 未初始化的退化布局,作废) |
    | PME 回插 | **0.9** | 1.5 | E0h(195 G-read/s) |
    | 约束/积分 | 待实测(M2) | — | 同上 |
 
@@ -539,7 +539,7 @@ FreeSolv 子集 · JACS set RBFE vs 文献 RMSE(判据 Q-015 已定标,docs/m0/q
 | ID | 量 | 值 | 出处 / 依赖(标度关系) | 失效触发 |
 |---|---|---|---|---|
 | Q-001 | 直空间对数/步 | ~1.5×10⁹(skin 0.35,v1.1.6 重算;旧 0.28 时 1.3×10⁹) | cutoff 1.0 + skin 0.35、水密度;N_pairs ∝ N(ρ)(r_c+s)³(×1.18 随 skin 重算) | 改 cutoff/skin/体系密度 |
-| Q-002 | 单步时间 | **分量全实测**(直空间 16.0 + PME 24.9[铺展 10.7+FFT 13.3+回插 0.9] + 约束/积分待测)⇒ **总步时 ≈ 43+ ms,~7.9 ns/day/副本@4fs、48 副本 ~380 ns/day**;roofline 的 PME=直空间×40% 假设被实测否(PME 1.56× 直空间),provisional 带(610–760)**未达**,归因:铺展原子 17.2 G/s 为最弱环节、FFT 13.3 ms 硬底;优化前沿 = cell 排序铺展 / stream 重叠;约束/积分实测后替换总量 | E0g:naive→算术重构(+13%)→预折叠(+3%);直空间含 26% 环形区成本(skin 的结构性代价);紧凑表 +38% 但不合规(向内漂移对漏算,3.4e-10 指纹);FLOP 口径 ~1.25×10¹¹ 仅作 roofline 参照(60 FLOP/对约定高估 poly 路径);外部锚点 E0a/E0c OpenMM double 134.9–136.0 ns/day @2fs(60k) | 改精度、改 FLOP/对约定或口径;**PME/积分 kernel 实测后替换总量** |
+| Q-002 | 单步时间 | **分量全实测**(直空间 16.0 + PME 18.9[tile 铺展 4.7 + FFT 13.3 + 回插 0.9,E0h2] + 约束/积分待测)⇒ **总步时 ≈ 37–38 ms,~8.6 ns/day/副本@4fs、48 副本 ~420 ns/day**;roofline 的 PME=直空间×40% 假设被实测否;provisional 带(610–760)未达,归因:FFT 13.3 ms 硬底、tile 后铺展 4.7 ms;优化前沿 = stream 重叠(FFT 与直空间)、gather 型铺展;约束/积分实测后替换总量 | E0g/E0h/E0h2 证据链;外部锚点 E0a/E0c OpenMM double 134.9–136.0 ns/day @2fs(60k) | 改精度、改 FLOP/对约定或口径;**积分/约束 kernel 实测后替换总量** |
 | Q-003 | launch 占比 | 3–6% | ∝ kernel 数 / 单步时间;K=25 | kernel 融合;单步时间变 |
 | Q-004 | 批量红利 | **直空间 2.10×(f64)⊗ FFT ≈1.0 ⊗ f_amortize 1.10–1.15**(E0b 实测 2026-08-28;f32 下直空间红利 5.98×) | 两侧 achieved % of peak(E0b 分部件,已测) | η 复测;kernel 融合 |
 | Q-004b/c | η_serial / η_batch | **已实测(2026-08-28,A100,util 0–5%)**:直空间 f64 8.7% → 18.3%(R=1→48,60 FLOP/对口径,intrinsic erfc);f32 4.3% → 25.8%;FFT 128³ ~1.54–1.59 TFLOP/s(~16% peak,~480 GB/s)与 batch 无关;**E0c(2026-09-01):N 标度 double 523/314/135 ns/day @5k/20k/60k,fp64 损失 1.71×→2.54× 随 N 增** | 单副本 occupancy、FFT 尺寸;批量宽度;**N(fp64 损失趋势)** | 换卡、换 N、换 R |

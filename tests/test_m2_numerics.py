@@ -143,8 +143,15 @@ class TestKernelSourceHygiene:
     guaranteed runtime failure (struck three times 2026-09). Tripwire."""
 
     def test_bench_src_strings_ascii(self):
-        for path in sorted(E0_DIR.glob("e0*.py")):
+        """All CUDA source blocks (any r-string containing __global__,
+        plus standalone .cu files) must be ASCII — NVRTC guarantee."""
+        for path in sorted(E0_DIR.glob("e0*.py")) + sorted(E0_DIR.glob("*.cu")):
             text = path.read_text(encoding="utf-8")
-            for m in re.finditer(r'SRC = r?"""(.*?)"""', text, re.S):
+            for m in re.finditer(r'r?"""(.*?)"""', text, re.S):
+                if "__global__" not in m.group(1):
+                    continue
                 bad = [c for c in m.group(1) if ord(c) > 127]
-                assert not bad, f"{path.name}: non-ASCII in SRC: {bad[:3]!r}"
+                assert not bad, f"{path.name}: non-ASCII in CUDA SRC: {bad[:3]!r}"
+            if path.suffix == ".cu":
+                bad = [c for c in text if ord(c) > 127]
+                assert not bad, f"{path.name}: non-ASCII in .cu file: {bad[:3]!r}"

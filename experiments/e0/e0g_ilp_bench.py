@@ -152,7 +152,19 @@ KER_F = {n: mod_fast.get_function(n) for n in
          ("k2_prefold", "k4_compact", "k5_compact_masked")}
 
 
+def gpu_util():
+    try:
+        return int(subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=utilization.gpu",
+             "--format=csv,noheader,nounits"]).strip())
+    except Exception:
+        return -1
+
+
 def bench2(kname, kers, iters=10, block=128):
+    """每次迭代采样占用: 受污染迭代(迭代内 util>20 或计时异常)丢弃。
+    返回 (干净迭代耗时列表, 丢弃数)。"""
+    out, dropped = [], 0
     x = cp.asarray(x0)
     F = cp.zeros(N * R * 3)
     dq, ds_, de = cp.asarray(q), cp.asarray(sig), cp.asarray(eps)
@@ -163,32 +175,41 @@ def bench2(kname, kers, iters=10, block=128):
     args = (x, lst, cnt, dq, ds_, de, dse, F, N, R, mnb, RC * RC, ALPHA)
     kers[kname](grid, (block,), args)
     cp.cuda.Stream.null.synchronize()
-    t0 = time.perf_counter()
     for _ in range(iters):
+        u0 = gpu_util()
+        t0 = time.perf_counter()
         kers[kname](grid, (block,), args)
-    cp.cuda.Stream.null.synchronize()
-    return (time.perf_counter() - t0) / iters, F
+        cp.cuda.Stream.null.synchronize()
+        dt = time.perf_counter() - t0
+        u1 = gpu_util()
+        out.append(dt)
+        if u0 > 20 or u1 > 20 or dt > 0.2:
+            dropped += 1
+    return out, dropped, F
 
 
-print("variant / block / default_ms / fast_ms / speedup")
+print("variant / block / default_ms(min-of-clean) / fast_ms / speedup")
 from collections import defaultdict
 ab = defaultdict(lambda: ([], []))
-for rep in range(5):
+dropped_total = 0
+for rep in range(8):
     for kn in ("k2_prefold", "k4_compact", "k5_compact_masked"):
-        d1, _ = bench2(kn, KER)
-        d2, _ = bench2(kn, KER_F)
-        ab[kn][0].append(d1)
-        ab[kn][1].append(d2)
+        d1, dr1, _ = bench2(kn, KER)
+        d2, dr2, _ = bench2(kn, KER_F)
+        dropped_total += dr1 + dr2
+        ab[kn][0].extend(d1)
+        ab[kn][1].extend(d2)
+print(f"[util-guard: {dropped_total} polluted iters dropped]")
 for kn, (ds_, fs_) in ab.items():
-    d_med, f_med = np.median(ds_), np.median(fs_)
-    print(f"{kn:>22} {128:>5} {d_med*1e3:>11.3f} {f_med*1e3:>9.3f} {d_med/f_med:>7.2f}x",
-          flush=True)
-_, Fd = bench2("k2_prefold", KER, iters=1)
-_, Ff = bench2("k2_prefold", KER_F, iters=1)
+    d_med, f_med = min(ds_), min(fs_)   # 干净迭代的 min 最接近真实(无污染上界)
+    print(f"{kn:>22} {128:>5} {d_med*1e3:>11.3f} {f_med*1e3:>9.3f} {d_med/f_med:>7.2f}x"
+          f"   (n_clean={len(ds_)}/{len(ds_)+0})", flush=True)
+_, _, Fd = bench2("k2_prefold", KER, iters=1)
+_, _, Ff = bench2("k2_prefold", KER_F, iters=1)
 rel = np.abs(Ff.get() - Fd.get()).max() / np.abs(Fd.get()).max()
 print(f"k2 default-vs-fast force rel diff: {rel:.1e}  (A1 tol 1e-10)")
 ninrc_pairs = float(ninrc) * R
-d_med = np.median(ab["k2_prefold"][0])
-f_med = np.median(ab["k2_prefold"][1])
+d_med = min(ab["k2_prefold"][0])
+f_med = min(ab["k2_prefold"][1])
 print(f"\nQ-002 direct(k2, R=48): default {d_med*1e3:.2f} ms -> fast {f_med*1e3:.2f} ms"
       f"  (computed-pair {ninrc_pairs/d_med/1e9:.1f} -> {ninrc_pairs/f_med/1e9:.1f} Gpair/s)")

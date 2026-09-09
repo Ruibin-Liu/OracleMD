@@ -24,7 +24,12 @@ import cupy as cp
 SRC = open(__import__("pathlib").Path(__file__).with_name(
     "e0g_kernels.cu"), encoding="ascii").read()
 
-mod = cp.RawModule(code=SRC)
+import os
+FAST = os.environ.get("FAST_MATH", "0") == "1"
+OPTS = ("-prec-div=false,-prec-sqrt=true",) if False else (
+    ("--std=c++17", "-prec-div=false", "-prec-sqrt=false") if FAST else ("--std=c++17",))
+mod = cp.RawModule(code=SRC, options=OPTS)
+print("NVRTC options:", OPTS)
 KER = {n: mod.get_function(n) for n in
        ("k0_base", "k1_arith", "k2_prefold", "k3_unroll", "k4_compact", "k5_compact_masked")}
 
@@ -140,27 +145,50 @@ def bench(kname, iters=10, block=256):
     return dt, npairs / dt, F, (x, dq, ds, de, dse)
 
 
-print(f"{'variant':>10} {'block':>5} {'ms/iter':>9} {'Gpair/s':>8} {'%peak60':>8} {'xcheck':>9}")
-base_F = None
-results = {}
-for kn in ("k0_base", "k1_arith", "k2_prefold", "k3_unroll", "k4_compact", "k5_compact_masked"):
-    for block in (256,):
-        dt, pps, F, _ = bench(kn, block=block)
-        if base_F is None:
-            base_F = F.get()
-            xc = "ref"
-        else:
-            Fi, Fk = base_F, F.get()
-            rel = np.abs(Fk - Fi).max() / np.abs(base_F).max()
-            xc = f"{rel:.1e}"
-        results[kn] = pps
-        print(f"{kn:>10} {block:>5} {dt*1e3:>9.3f} {pps/1e9:>8.2f} {100*pps*60/9.7e12:>7.1f}% {xc:>9}", flush=True)
-# block sweep on best
-for kn in ("k2_prefold", "k4_compact", "k5_compact_masked"):
-    for block in (128,):
-        dt, pps, F, _ = bench(kn, block=block)
-        print(f"{kn:>10} {block:>5} {dt*1e3:>9.3f} {pps/1e9:>8.2f} {100*pps*60/9.7e12:>7.1f}%", flush=True)
-        results[(kn, block)] = pps
-bestv = max(results.values())
-print(f"\nbest computed-pair throughput: {bestv/1e9:.1f} Gpair/s")
-print(f"Q-002 直空间分量(k4 口径, rc 内对): {ninrc*R/bestv*1e3:.1f} ms/步(R={R})")
+# ---- 交替 A/B: default vs -prec-div=false,-prec-sqrt=false ----
+mod_fast = cp.RawModule(code=SRC, options=("--std=c++17", "-prec-div=false",
+                                           "-prec-sqrt=false"))
+KER_F = {n: mod_fast.get_function(n) for n in
+         ("k2_prefold", "k4_compact", "k5_compact_masked")}
+
+
+def bench2(kname, kers, iters=10, block=128):
+    x = cp.asarray(x0)
+    F = cp.zeros(N * R * 3)
+    dq, ds_, de = cp.asarray(q), cp.asarray(sig), cp.asarray(eps)
+    dse = cp.asarray(sqrteps)
+    grid = ((N * R + block - 1) // block,)
+    lst, cnt, mnb = (d_clist, d_cncnt, cmaxnb) \
+        if kname in ("k4_compact", "k5_compact_masked") else (d_list, d_ncnt, maxnb)
+    args = (x, lst, cnt, dq, ds_, de, dse, F, N, R, mnb, RC * RC, ALPHA)
+    kers[kname](grid, (block,), args)
+    cp.cuda.Stream.null.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        kers[kname](grid, (block,), args)
+    cp.cuda.Stream.null.synchronize()
+    return (time.perf_counter() - t0) / iters, F
+
+
+print("variant / block / default_ms / fast_ms / speedup")
+from collections import defaultdict
+ab = defaultdict(lambda: ([], []))
+for rep in range(5):
+    for kn in ("k2_prefold", "k4_compact", "k5_compact_masked"):
+        d1, _ = bench2(kn, KER)
+        d2, _ = bench2(kn, KER_F)
+        ab[kn][0].append(d1)
+        ab[kn][1].append(d2)
+for kn, (ds_, fs_) in ab.items():
+    d_med, f_med = np.median(ds_), np.median(fs_)
+    print(f"{kn:>22} {128:>5} {d_med*1e3:>11.3f} {f_med*1e3:>9.3f} {d_med/f_med:>7.2f}x",
+          flush=True)
+_, Fd = bench2("k2_prefold", KER, iters=1)
+_, Ff = bench2("k2_prefold", KER_F, iters=1)
+rel = np.abs(Ff.get() - Fd.get()).max() / np.abs(Fd.get()).max()
+print(f"k2 default-vs-fast force rel diff: {rel:.1e}  (A1 tol 1e-10)")
+ninrc_pairs = float(ninrc) * R
+d_med = np.median(ab["k2_prefold"][0])
+f_med = np.median(ab["k2_prefold"][1])
+print(f"\nQ-002 direct(k2, R=48): default {d_med*1e3:.2f} ms -> fast {f_med*1e3:.2f} ms"
+      f"  (computed-pair {ninrc_pairs/d_med/1e9:.1f} -> {ninrc_pairs/f_med/1e9:.1f} Gpair/s)")

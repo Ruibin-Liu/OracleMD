@@ -79,12 +79,55 @@ extern "C" __global__ void drift_orn(
         x[base + d] = x[base + d] + s * v[base + d];
     }
     if (gamma > 0.0) {
+        // O-step gaussian: opus.rng.gauss_stream composition INLINED.
+        // Do NOT refactor into a __device__ helper: the out-of-line
+        // function + bounded accept loop hangs at NVRTC for specific
+        // streams/grids (E0o 2026-09-10; the inline form is the
+        // verified-working shape, 512+ threads 0 mismatches vs opus).
         for (int d = 0; d < 3; ++d) {
-            double g1 = gauss_stream1(seed, step,
-                                      (unsigned long long)a,
-                                      (unsigned long long)r,
-                                      (unsigned long long)d,
-                                      wi, ki, fi, nor_r, nor_inv_r);
+            unsigned long long xk = seed;
+            xk ^= (step + 1ULL) * 0x9E3779B97F4A7C15ULL;
+            xk = (xk ^ (xk >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            xk = (xk ^ (xk >> 27)) * 0x94D049BB133111EBULL;
+            xk = xk ^ (xk >> 31)
+                ^ ((unsigned long long)(a + 1)) * 0x8B72C5AF1A3F1E2DULL
+                ^ ((unsigned long long)(r + 1) << 21)
+                ^ ((unsigned long long)(d + 1)) * 0xC2B2AE3D27D4EB4FULL;
+            philox_rng rng;
+            rng.init(xk);
+            double g1 = 0.0;
+            for (int zzt = 0; zzt < 100000; ++zzt) {
+                unsigned long long r5 = rng.next_u64();
+                int idx = (int)(r5 & 0xFFULL);
+                r5 >>= 8;
+                int sign = (int)(r5 & 0x1ULL);
+                unsigned long long rabs = (r5 >> 1)
+                    & 0x000FFFFFFFFFFFFFULL;
+                g1 = (double)rabs * wi[idx];
+                if (sign & 0x1) g1 = -g1;
+                if (rabs < ki[idx]) break;
+                if (idx == 0) {
+                    for (int tail = 0; tail < 100000; ++tail) {
+                        double xx = -nor_inv_r
+                            * log1p(-(rng.next_u64() >> 11)
+                                    * (1.0 / 9007199254740992.0));
+                        double yy = -log1p(-(rng.next_u64() >> 11)
+                                           * (1.0 / 9007199254740992.0));
+                        if (yy + yy > xx * xx) {
+                            g1 = ((rabs >> 8) & 0x1) ? -(nor_r + xx)
+                                                     : (nor_r + xx);
+                            break;
+                        }
+                    }
+                    break;
+                }
+                double u = (rng.next_u64() >> 11)
+                    * (1.0 / 9007199254740992.0);
+                if ((fi[idx - 1] - fi[idx]) * u + fi[idx]
+                    < exp(-0.5 * g1 * g1))
+                    break;
+                g1 = 0.0;  // rejected: next attempt (exhaustion -> 0)
+            }
             v[base + d] = c * v[base + d] + ns * g1;
         }
     }

@@ -654,3 +654,27 @@ A/B 交替计时(同进程、共租户同污染、比值有效):`-prec-div=false
 5. **KE 常数截断**(138.935456 vs 138.93545764438198,rel 1.18e-8——第 8 类转录陷阱)→ KE 从 opus.nonbonded 导入,**禁止重打**。
 
 方法论收获:①受控双原子体系是公式级对齐的最小分辨探针(五缺陷中 ②④⑤ 都靠它定位);②"组件逐项精确 + 组合结果偏差"⇒ 查常数与折叠路径;③对齐台的折叠分解(两次调用拆 LJ/coul)自证有效。
+
+---
+
+# 生产集成第二阶段:铺展/回插/SHAKE/积分 kernel A1 对齐收编(2026-09-10)
+
+**结果(A100,e0n_collect_align.py,共租 vLLM 窗口——位级门不受竞争影响)**:**八门全绿**——
+- 铺展 v1(全局原子 oracle 路径)**bitwise vs opus.pme.spread + fxp**(int64 Q16.48;含双边缘接缝应力原子);
+- 铺展 tile(生产路径)**bitwise vs opus 且 ≡ v1**(E0h2 先例保持);
+- 回插(伴随梯度 dM/du·φ,非基准的势代理)**A1 双门 max abs 2.5e-12 / rel 3.0e-12**——非位级为设计内:opus 的 64 点 numpy pairwise 和 vs kernel 顺序和,乘积链逐操作序一致;
+- SHAKE / RATTLE **bitwise vs opus.dynamics**(12 固定迭代,Q-016;约束序 = 水主 (OH1,OH2,HH));
+- BAOAB 流式链 K=3 + 尾步 **x/v bitwise vs opus Dynamics.step_baoab**(gamma=0;一次力评估/步 = [闭步半踢→RATTLE→开步半踢→漂移→O→漂移→SHAKE],held-force 分解的位级等价性获证)。
+
+**模块**:`gpu/pme.py`(spread_v1/spread_tile/interp_gather + cell_sort:接缝分割 hull→块集、每 (entry,副本,维) ±ng 位移按最大重叠选择;`-fmad=false` 为位级前提)、`gpu/constrain.py`、`gpu/integrate.py`;SCALE 从 opus.fxp 导入(陷阱第 8 类防线)。CI 增 21 项(tests/test_gpu_pme.py、test_gpu_dynamics.py):numpy 镜像 vs opus 位级、cell_sort flush-owner 不变量、放置仿真 ≡ v1 仿真(含 tc∤ng 短块)、ASCII 与 ×3 基址绊线。全套 92 passed + 1 skipped。
+
+**对齐猎捕的缺陷(本阶段 3 个)**:
+1. **coords_u 分量基址漏 ×3**(布局接线类):`coords_u(x, a*R+r)` 把原子-副本索引当分量基址——r=0 时 i=0 蒙对 ⇒ 单原子/rep0 检查全部假绿,rep≥1 组件循环移位;V1 铺展 diff 5268 格。修 + 源码绊线(CI 数 ×3 调用点)。对照:direct.py 第一阶段同一处写对了——同一项目内复制粘贴也要对拍。
+2. **tile flush 短末块回绕双写**(包络边缘所有权类):tc ∤ ng 时末块短([24,31]@ng32/tc12),flush 的 `tx∈[1,TC]` 编码 `[ox,ox+TC)` 越过网格端回绕,与真 owner 双写,接缝格恰 ×4/×8(各维 wrap 组合数)。E0h2 靠「锚点离边 ≥2 格」包络回避(登记在案),对齐台默认 tc=12 直接触发。修(flush 加 `ox+tx−1 < NG`)+ CI tc=12 用例 + 仿真镜像同步。
+3. **对齐台自身 d 重绑定**:baoab 段 reload npz 后 x_ref/v_ref 仍指 shake 段数组——「GPU 链 vs 错参考」必挂;被参考自洽性探针(同输入现场重跑 opus 链 ≡ npz 参考)定位。对齐台也是被测代码,同样需要 oracle 纪律。
+
+**方法论收获**:
+- E0 系列基准 kernel 是**成本代表型**而非语义型(截断量化 vs rint、闭式权重 vs 递归、y-major vs x-major、势代理 vs 伴随梯度、philox-lite vs 计数 RNG、2× 过冲 SHAKE 变体)——收编必须以 opus 为语义源重写,bench 只借性能形状;「能跑+量对」与「语义对」是两回事。
+- 位级铺展的三前提:-fmad=false(禁 FMA 缩合)、逐操作序复刻(左结合乘积链 q·w0·w1·w2、踢步**除以质量**非乘 invm、3 元素顺序和 = numpy 小和路径)、llrint ≡ np.rint(round-half-even)。
+- **两层防线分工实证**:本地 CI 镜像抓 op-vs-opus 语义,本阶段两个 kernel 缺陷都属 CUDA 转录层,本地镜像不可见——pod 位级对齐不可省。
+- RNG 现状:O 步为 E0j philox4x32-7 占位(成本代表),与 opus.rng.gauss_stream(numpy Philox4x64+ziggurat)**不**等价——gamma>0 动力学明确不对齐,柱 3 兑换前禁止在任何等价断言中启用随机项。

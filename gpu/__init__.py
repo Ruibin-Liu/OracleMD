@@ -7,3 +7,6 @@ forbidden (7 transcription-class defects in the 2026-09 session, all
 caught by cross-checks; the generators + CI tripwires are the institution).
 """
 from . import erfc_poly  # noqa: F401
+from . import constrain  # noqa: F401
+from . import integrate  # noqa: F401
+from . import pme  # noqa: F401

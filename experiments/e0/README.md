@@ -40,3 +40,4 @@
 | `e0_watchdog2.sh` | 看门狗:util≤20% 持续 2 分钟自动顺序跑 E0a/E0b-FFT/E0b-direct,带环境快照与置信度分级(util<5% = USABLE,5–20% = REFERENCE-ONLY),结果写 `~/e0_results.log` |
 
 按 spec §10.3(基线来源纪律):M2 硬地板基线 = max(E0a OpenMM double, e0b_direct R=1);M0 参考实现**不**作基线。
+| `e0n_collect_align.py` | 生产收编对齐台(gpu/{pme,constrain,integrate} 的 A1 对齐;本地 opus oracle → npz → pod 对拍;2026-09-10) | **全门绿:铺展 v1/tile 对 opus 位级(Q16.48 int64),tile≡v1(E0h2 先例保持,含接缝应力);回插(伴随梯度)双门 max rel 3.0e-12(非位级=和序,设计内);SHAKE/RATTLE 位级;BAOAB 流式链 K=3+尾步 x/v 位级(gamma=0)**;猎捕缺陷:coords_u 漏 ×3 基址(布局接线类)、tile flush 短末块回绕双写(tc∤ng;E0h2 包络回避项兑现)、台本 d 重绑定;RNG 占位=philox-lite,gamma>0 留柱 3 |

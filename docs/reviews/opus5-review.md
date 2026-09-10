@@ -678,3 +678,28 @@ A/B 交替计时(同进程、共租户同污染、比值有效):`-prec-div=false
 - 位级铺展的三前提:-fmad=false(禁 FMA 缩合)、逐操作序复刻(左结合乘积链 q·w0·w1·w2、踢步**除以质量**非乘 invm、3 元素顺序和 = numpy 小和路径)、llrint ≡ np.rint(round-half-even)。
 - **两层防线分工实证**:本地 CI 镜像抓 op-vs-opus 语义,本阶段两个 kernel 缺陷都属 CUDA 转录层,本地镜像不可见——pod 位级对齐不可省。
 - RNG 现状:O 步为 E0j philox4x32-7 占位(成本代表),与 opus.rng.gauss_stream(numpy Philox4x64+ziggurat)**不**等价——gamma>0 动力学明确不对齐,柱 3 兑换前禁止在任何等价断言中启用随机项。
+
+---
+
+# 生产集成第三阶段:柱 1(Q24.40 力累加)+ 柱 3(counter RNG)收编(2026-09-10)
+
+**交付**:`gpu/force_q24.py`(直空间 Q24.40 kernel:每对贡献量化一次 + int64 累加,opus 逐操作序;α=0 时与 opus 的对齐可达位级——erfc(0)=1/exp(-0)=1 全平台精确)、`gpu/rand.py`(numpy Philox4x64-10 + 256 级 ziggurat 镜像 + CUDA 发射,`ziggurat_constants.json` 程序化解析 numpy 头文件落盘,零手抄)、`gpu/integrate.py` O 步接入真 RNG(替换 philox-lite 占位)、`gpu/ziggurat_gen.py`(表生成器)。
+
+**CI**:tests/test_gpu_rand.py 18 项(philox 原始流 vs numpy `random_raw` 位级、ziggurat vs `standard_normal` 位级、`gauss_stream` 镜像 vs opus 位级、独立性、ASCII、常数绊线)+ tests/test_gpu_force_q24.py 9 项(mirror_opus ≡ opus bitwise@α=0 三个体系含周期 MIC 与饱和域、牛顿第三定律位级、双门、绊线)。全套 96 passed + 1 skipped → 本段后复测。
+
+**E0o 对齐台(A100,独占窗口前段)**:P1 六门全绿——direct_q vs mirror_kernel **bitwise**(α=0 周期+非周期)、α=3.5 确定性 ×2、α=3.5 vs mirror **0 LSB 差异**(设备 exp 与 glibc 在此域完全一致)、牛顿第三定律位级、dequant vs opus 双门(max abs 7.28e-12@α=0)。
+
+**对齐猎捕缺陷(本阶段 5 个,前 3 个是真语义缺陷)**:
+1. **philox4x64_10 原地改写计数器**(指针 vs C 结构体按值语义):numpy 传值,设备第一版原地 `ctr[i] = t[i]`——块 2 起把 block(1) 当计数器,流全错且特定 key 撞上持续拒绝循环 = grid 静默挂起。修复(块内局部副本)+ 设备原始流 vs 宿主逐 u64 对拍钉死。
+2. **tile flush 短末块回绕双写**(上一段已修,E0n;此处复跑确认)。
+3. **饱和钳位到 float(2^63−1)**:该 double 恰为 2^63,llrint 溢出为 INT64_MIN——牛顿第三定律在饱和域非对称(opus add_to 同样有该边界缺陷,登记)。修复:钳位 ±2^62(语义不变,转换精确)。
+4. **`repr(np.float64)` 进 CUDA 源**:opus `_INV_SQRT_PI` 是 numpy 标量,numpy 2.x repr 为 `np.float64(...)`——发射即未定义标识符。修复:`_constants()` 强制 `float()`;KE 同样处理。
+5. **CUDA kernel 参数对齐**:int32 夹在指针中间 → 后续指针错位 4 字节 → 表读野地址 → 静默挂起(cupy 不自动对齐)。规约:**kernel 参数全指针在前、标量按对齐分组**;ziggurat_probe 已修。
+
+**方法论收获**:
+- **opus.rng 的组合契约可以严格位级兑现**:同一 tuple ⇒ 同一高斯值(philox4x64_10 + ziggurat 逐位),不再只是"组合语义";柱 3 从"合同"升级为"位级事实"。gamma>0 动力学对齐随后可用。
+- **半 open 的坑**:`ziggurat_normal` 出函数形态在无界 `for(;;)` + 特定流 + 多块下静默挂起(NVRTC codegen 嫌疑;限次循环形态同输入同流验证 0 失配)。生产解:接受循环限次 1e5(连续拒绝概率 0.007^1e5 = 0),耗尽返回确定性哨兵(轨迹会被对齐立刻抓到)。**登记:NVRTC 版本升级后应复测该形态**。
+- **测试体系自身的包络纪律**:水簇生成器需分子间最小间距拒绝采样,否则 H···H 碰撞把测试推进饱和域(以及 opus add_to 的 |scaled|==2^63 float 比较 vs int64 cast 边界缺陷——登记,镜像忠实复刻之)。
+- **排障纪律**:共租波动(GPU util 0↔100%)会污染"挂起 vs 正常"的判别——本轮多组"key/块数依赖"数据事后看全部不可信;真缺陷只有原始流逐 u64 对拍钉死的那个。独占窗口复测前不下结论。
+
+**待办**:①P3(设备 gauss_stream1 vs opus 4096 tuple 对拍)与 P3b(gamma=1 T=300 动力学位级)在独占窗口复跑——首轮因共租波动(GPU 0↔100%,boltz/FoldServer 抢占)无法判别;②∀K ∈ {1,5,25,50} 位级断言;③混合门分量时序(独占)。

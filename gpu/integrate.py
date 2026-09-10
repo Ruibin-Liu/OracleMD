@@ -29,49 +29,22 @@ Bitwise contract vs opus (given -fmad=false):
   - numpy small-n sums are sequential == left-associated expressions here.
 Layout: x/v/f flat (N*R*3,), component idx -> atom idx // (3R).
 
-RNG (pillar 3 PENDING): the O-step gaussian is the E0j cost-representative
-philox4x32-7 + Box-Muller, keyed (seed, step, idx, dof).  It is NOT the
-opus.rng.gauss_stream stream (numpy Philox4x64-10 + ziggurat); dynamics
-alignment runs gamma=0.  Replacing the device function with the
-opus-equivalent stream is its own work item -- do not align gamma > 0
-dynamics until it lands.
+RNG (pillar 3, LANDED 2026-09-10): the O-step gaussian is the real numpy
+Philox4x64-10 + 256-level ziggurat stream (gpu/rand.py emit_cuda),
+keyed opus.rng._mix(global_seed, step+1, atom+1, slot+1, dof+1) with
+slot = replica index (M2 multi-replica extension of the composition
+contract; stable atom id == array index pre-reorder).  gamma>0 dynamics
+are alignable against opus.bitwise provided the device log1p/exp parity
+probe passes (e0n report).
 """
 from __future__ import annotations
 
 import numpy as np
 
+from . import rand
+
 _KERNEL_TMPL = r"""
-#define PHILOX_M4x32_0 0xD2511F53u
-#define PHILOX_M4x32_1 0xCD9E8D57u
-#define PHILOX_W32_0   0x9E3779B9u
-#define PHILOX_W32_1   0xBB67AE85u
-
-// PILLAR 3 PENDING: cost-representative RNG (E0j), NOT opus.rng.gauss_stream
-__device__ __forceinline__ uint4 philox4x32(uint4 c, uint2 k) {
-    for (int r = 0; r < 7; ++r) {
-        unsigned hi, lo;
-        lo = PHILOX_M4x32_0 * c.x;
-        hi = __umulhi(PHILOX_M4x32_0, c.x);
-        unsigned t0 = lo ^ c.z ^ k.x;
-        unsigned t1 = hi ^ c.w ^ k.y;
-        lo = PHILOX_M4x32_1 * c.y;
-        hi = __umulhi(PHILOX_M4x32_1, c.y);
-        c.z = lo ^ c.w ^ k.y;
-        c.w = hi ^ c.x ^ k.x;
-        c.x = t0; c.y = t1;
-        k.x += PHILOX_W32_0; k.y += PHILOX_W32_1;
-    }
-    return c;
-}
-
-__device__ __forceinline__ double gauss_pair(unsigned u1, unsigned u2,
-                                             double* second) {
-    double a = (u1 + 1.0) * 2.3283064365386963e-10;
-    double b = (u2 + 1.0) * 2.3283064365386963e-10;
-    double r = sqrt(-2.0 * log(a));
-    *second = r * sin(6.283185307179586 * b);
-    return r * cos(6.283185307179586 * b);
-}
+__RAND__
 
 // v = v + (s*f)/m per component (opus kick; division, not invm multiply)
 extern "C" __global__ void half_kick(
@@ -84,16 +57,21 @@ extern "C" __global__ void half_kick(
 }
 
 // x = x + s*v;  O: v = c*v + ns*g (uniform gamma>0 branch);  x = x + s*v
-// one thread per (atom, replica)
+// one thread per (atom, replica); O-step gaussian = opus.rng.gauss_stream
+// (pillar 3): key=(seed, step, atom, slot=r, dof=d), numpy ziggurat stream
 extern "C" __global__ void drift_orn(
     double* __restrict__ x, double* __restrict__ v,
     const double* __restrict__ m, int nr, int R,
     double s, double gamma, double dt, double kT,
-    unsigned long long step, unsigned seed)
+    unsigned long long step, unsigned long long seed,
+    const double* __restrict__ wi,
+    const unsigned long long* __restrict__ ki,
+    const double* __restrict__ fi,
+    double nor_r, double nor_inv_r)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= nr) return;
-    int a = idx / R;
+    int a = idx / R, r = idx - a * R;
     double c = exp(-gamma * dt);
     double ns = sqrt((kT * (1.0 - c * c)) / m[a]);
     long long base = (long long)idx * 3;
@@ -102,12 +80,11 @@ extern "C" __global__ void drift_orn(
     }
     if (gamma > 0.0) {
         for (int d = 0; d < 3; ++d) {
-            uint4 ctr = make_uint4((unsigned)step, (unsigned)(step >> 32),
-                                   (unsigned)idx, (unsigned)d);
-            uint2 key = make_uint2(seed, 0u);
-            uint4 r4 = philox4x32(ctr, key);
-            double g2;
-            double g1 = gauss_pair(r4.x, r4.y, &g2);
+            double g1 = gauss_stream1(seed, step,
+                                      (unsigned long long)a,
+                                      (unsigned long long)r,
+                                      (unsigned long long)d,
+                                      wi, ki, fi, nor_r, nor_inv_r);
             v[base + d] = c * v[base + d] + ns * g1;
         }
     }
@@ -123,7 +100,9 @@ _SRC_CACHE: dict[str, object] = {}
 def _kernels():
     import cupy as cp
     if "k" not in _SRC_CACHE:
-        mod = cp.RawModule(code=_KERNEL_TMPL, options=("-fmad", "false"))
+        from .rand import emit_cuda
+        src = _KERNEL_TMPL.replace("__RAND__", emit_cuda())
+        mod = cp.RawModule(code=src, options=("-fmad", "false"))
         _SRC_CACHE["k"] = (mod.get_function("half_kick"),
                            mod.get_function("drift_orn"))
     return _SRC_CACHE["k"]
@@ -146,15 +125,33 @@ def half_kick(v, f, mass, n: int, r: int, s: float):
     cp.cuda.Stream.null.synchronize()
 
 
+_TABLES_DEV: dict = {}
+
+
+def _rng_tables():
+    """Upload ziggurat tables once (device cache)."""
+    import cupy as cp
+    if "wi" not in _TABLES_DEV:
+        t = rand._TABLES
+        _TABLES_DEV["wi"] = cp.asarray(np.array(t["wi"], dtype=np.float64))
+        _TABLES_DEV["ki"] = cp.asarray(np.array(t["ki"], dtype=np.uint64))
+        _TABLES_DEV["fi"] = cp.asarray(np.array(t["fi"], dtype=np.float64))
+        _TABLES_DEV["nor_r"] = float(t["nor_r"])
+        _TABLES_DEV["nor_inv_r"] = float(t["nor_inv_r"])
+    return _TABLES_DEV
+
+
 def drift_orn(x, v, mass, n: int, r: int, *, s: float, gamma: float,
               dt: float, kT: float, step: int, seed: int):
     """In-place half-drift + (optional) O-step + half-drift."""
     import cupy as cp
     _, k_drift = _kernels()
+    t = _rng_tables()
     nr = n * r
     k_drift(((nr + 255) // 256,), (256,),
             (x, v, _d(mass), nr, r, float(s), float(gamma), float(dt),
-             float(kT), np.uint64(step), np.uint32(seed)))
+             float(kT), np.uint64(step), np.uint64(seed),
+             t["wi"], t["ki"], t["fi"], t["nor_r"], t["nor_inv_r"]))
     cp.cuda.Stream.null.synchronize()
 
 

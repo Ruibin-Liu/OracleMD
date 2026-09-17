@@ -35,15 +35,27 @@ DT = 4.0e-3
 
 def bench(fn, iters=10, warmup=3):
     import cupy as cp
+    import subprocess as _sp
+
+    def _util():
+        return int(_sp.check_output(
+            ["nvidia-smi", "--query-gpu=utilization.gpu",
+             "--format=csv,noheader,nounits"]).strip())
     for _ in range(warmup):
         fn()
     cp.cuda.Stream.null.synchronize()
     ts = []
     for _ in range(iters):
+        cp.cuda.Stream.null.synchronize()
+        u0 = _util()
         t0 = time.perf_counter()
         fn()
         cp.cuda.Stream.null.synchronize()
         ts.append(time.perf_counter() - t0)
+        u1 = _util()
+        if max(u0, u1) > 30:
+            print(f"  [WARN] util {max(u0, u1)}% during bench "
+                  f"(co-tenant) -- USABLE 级存疑", flush=True)
     return float(np.median(ts))
 
 
@@ -170,23 +182,22 @@ def main():
     ch = np.zeros((NG, NG, NG // 2 + 1), dtype=np.complex128)
     ch_dev = cp.asarray(ch)
 
+    SUB = 1  # E0e: per-transform time batch-independent (48 x 0.28 ms); batch=1 minimizes cuFFT plan work areas under a co-tenant
     def fft_chain():
-        # two 24-transform sub-batches: peak memory halved; per-transform
-        # time is batch-independent (E0e measured) so the total remains
-        # floor-comparable
+        # keeps peak memory low under a co-tenant; the total over all
+        # sub-batches remains floor-comparable (E0e batch-invariance)
         pot = cp.empty((R, NG, NG, NG), dtype=np.float64)
-        for b0 in (0, R // 2):
-            gf2 = grid[b0:b0 + R // 2].astype(np.float64) * (2.0 ** -48)
+        for b0 in range(0, R, SUB):
+            gf2 = grid[b0:b0 + SUB].astype(np.float64) * (2.0 ** -48)
             G = cp.fft.rfftn(gf2, axes=(1, 2, 3))
             G *= ch_dev
-            pot[b0:b0 + R // 2] = cp.fft.irfftn(
+            pot[b0:b0 + SUB] = cp.fft.irfftn(
                 G, s=(NG, NG, NG), axes=(1, 2, 3)).real
             del G, gf2
-            cp.get_default_memory_pool().free_all_pull()
+            cp.get_default_memory_pool().free_all_blocks()
         return pot
     t_fft = bench(fft_chain)
-    del gf, G, pot
-    cp.get_default_memory_pool().free_all_pull()
+    cp.get_default_memory_pool().free_all_blocks()
     print(f"FFT chain r2c+c(m)+c2r     : {t_fft * 1e3:8.2f} ms   "
           f"[floor row 13.3 (c2c)]", flush=True)
 

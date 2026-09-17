@@ -271,6 +271,27 @@ def _v1_sim(x, box, ng):
     return grid
 
 
+class TestCellSortVecEquivalence:
+    """The vectorized cell_sort must be array-bitwise identical to the
+    scalar reference (same enumeration order, same stable cid sort)."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("tc", [8, 12])
+    def test_vectorized_equals_reference(self, seed, tc):
+        ng, L = 32, 2.0
+        box = np.diag([L, L, L])
+        x, _ = _water_system(nw=12, r=3, seed=seed, box_len=L, jitter=0.3)
+        rng = np.random.default_rng(60 + seed)
+        x = x.copy()
+        x[::5] = rng.uniform(0.0, 0.03, x[::5].shape)
+        x[2::7] = rng.uniform(L - 0.03, L - 1e-12, x[2::7].shape)
+        out_v = pme.cell_sort(x, box, ng, tc)
+        out_r = pme.cell_sort_reference(x, box, ng, tc)
+        for a, b in zip(out_v, out_r):
+            assert np.array_equal(np.asarray(a), np.asarray(b)), \
+                "vectorized cell_sort != reference"
+
+
 class TestCellSort:
     @pytest.mark.parametrize("seed", [0, 1, 2])
     @pytest.mark.parametrize("tc", [8, 12])  # 12: tc does not divide 32

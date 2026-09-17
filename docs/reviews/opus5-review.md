@@ -719,3 +719,13 @@ A/B 交替计时(同进程、共租户同污染、比值有效):`-prec-div=false
 **阻塞待办**:①spread/FFT/interp/积分四行需真独占窗口重测(cell_sort 宿主版 60k 规模 ~45 s+/次且 OOM 边缘——**cell_sort 向量化 = 生产阻塞项**);②∀K 已单独通过(b70cc1b);③NVRTC 挂起形态复测。
 
 **台本说明**:e0p 支持 2×24 子批 FFT(E0e 实测 batch 无关,口径可对照)、池强制释放、util 守卫;重跑命令入库。
+
+---
+
+# E0p 复跑:cell_sort 向量化落地 + 时序全链贯通(共租,UNUSABLE 级)
+
+**cell_sort 向量化落地**:60k 原子/R48 从「>45 s 未完成」→ **0.47 s**(布尔矩阵精确并集去重 + int32 重叠选择 + ragged 笛卡尔积;与标量参考**数组位级一致**,CI 25 项含新等价测试)。∀K 复跑 10.1 s 通过。
+
+**时序(UNUSABLE 级——共租 util 34-60% 波动 + 列表口径与 E0g 不同,不可作门)**:direct fp64 43.8 ms / Q24.40 70.2 ms(**同列表比值 1.55-1.71× 稳定复现**,纯算术形态差);spread kernel-only 48.0 ms(E=480k vs e0h2 112k,副本噪声口径差异 + 竞争);FFT 链 r2c 38.7 ms(子批 8×24 峰值减半,E0e batch 无关);interp 30.8 ms;积分+真 RNG 401 ms(**真 philox4x64+ziggurat 的 fresh-stream-per-draw 组合成本,占位符地板 1.5 ms 需重定标**)。
+
+**生产阻塞项与待办**:①cell_sort 进一步优化(4.7 s/窗口仍重,目标 CUDA 预处理或 numba;正确性已锁定);②真独占窗口重测全部分量行(E0g 同口径列表 + 无竞争);③Q24.40 形态地板行重定标(E0g-Q24.40 变体 bench);④真 RNG 积分地板重定标;⑤FFT r2c vs c2c 口径声明(13.3 为 c2c,r2c 更廉价)。

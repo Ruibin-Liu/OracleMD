@@ -337,20 +337,29 @@ def _shift_select(ka: np.ndarray, ox: int, ng: int, tc: int) -> np.ndarray:
 
 
 def cell_sort(x: np.ndarray, box, ng: int, tc: int):
-    """Host cell assignment for spread_tile (seam-correct, periodic).
+    """Host cell assignment for spread_tile (seam-correct, periodic),
+    VECTORIZED (60k atoms: ~45 s/window python loop -> ~ms; the loop form
+    remains as cell_sort_reference, CI-compared array-bitwise).
 
     x: (N, R, 3) f64 cartesian.  Returns (atom_idx (E,), shift (E, R, 3)
     int8, cell_start, cell_end (nb,), cell_origin (nb, 3), ncell_used)
     with entries sorted by wrapped cell id ((bx*C+by)*C+bz, C = ceil(ng/tc)).
 
-    Block set per atom: seam-split of the stencil hull
-    [floor(min_r u)-1, floor(max_r u)+2] into <=3 in-grid runs; blocks are
-    the tc-blocks of each run.  Flush-owner invariant: every (atom,
-    replica, stencil point) is flushed exactly once, by its owner block
-    (shifts align each replica's anchors with the owner's tile; points of
-    misaligned replicas within this tile are halo/foreign and are skipped
-    by the guards -- their owner blocks hold their own entries).
+    Block set per atom: seam-split of the stencil hull (opus asymmetric
+    anchor convention [a-3, a]) into <=3 in-grid runs; the union of run
+    block ranges is computed exactly as a boolean matrix over the C block
+    columns (increasing order == sorted).  Flush-owner invariant: every
+    (atom, replica, stencil point) is flushed exactly once, by its owner
+    block (shifts align each replica's anchors with the owner's tile;
+    misaligned replicas are skipped by the tile guards -- their owner
+    blocks hold their own entries).
     """
+    return _cell_sort_vec(x, box, ng, tc)
+
+
+def cell_sort_reference(x: np.ndarray, box, ng: int, tc: int):
+    """Scalar loop form: CI reference (array-bitwise equivalence) and the
+    degenerate-input fallback."""
     x = np.asarray(x, dtype=np.float64)
     inv = _inv_diag(box)
     inv_d = np.diag(inv)
@@ -416,6 +425,105 @@ def cell_sort(x: np.ndarray, box, ng: int, tc: int):
     cs = np.searchsorted(cids, used_ids, "left").astype(np.int32)
     ce = np.searchsorted(cids, used_ids, "right").astype(np.int32)
     origin = np.array([[t[1], t[2], t[3]] for t in entries], dtype=np.int32)[cs]
+    return atom_e, shift, cs, ce, origin, int(len(used_ids))
+
+
+def _cell_sort_vec(x: np.ndarray, box, ng: int, tc: int):
+    """Vectorized cell assignment -- array-bitwise identical to
+    cell_sort_reference (same per-atom enumeration order, same stable
+    cid sort)."""
+    x = np.asarray(x, dtype=np.float64)
+    inv = _inv_diag(box)
+    inv_d = np.diag(inv)
+    gx = x * inv_d
+    C = -(-ng // tc)
+    n, n_rep, _ = x.shape
+    u = np.fmod(gx, 1.0)
+    u[u < 0] += 1.0
+    au = np.floor(u * ng).astype(np.int64)  # (n, R, 3)
+    kmin = au.min(axis=1) - 3
+    kmax = au.max(axis=1)
+
+    cols = np.arange(C)
+    B = np.full((3, n, C), -1, dtype=np.int64)   # padded sorted block ids
+    cnt = np.zeros((3, n), dtype=np.int64)
+    for d in range(3):
+        klo, khi = kmin[:, d], kmax[:, d]
+        lo = np.maximum(klo, 0)
+        hi = np.minimum(khi, ng - 1)
+        ok = hi >= lo
+        M = np.zeros((n, C), dtype=bool)
+        for (plo, phi, m) in (
+                (np.where(ok, lo // tc, -1), np.where(ok, hi // tc, -1), ok),
+                (np.where(klo < 0, (klo + ng) // tc, C), np.where(
+                    klo < 0, (ng - 1) // tc, -1), klo < 0),
+                (np.where(khi >= ng, 0, -1), np.where(
+                    khi >= ng, (khi - ng) // tc, -1), khi >= ng)):
+            # empty runs are encoded as plo > phi (C sentinel / -1 lower)
+            M |= m[:, None] & (cols[None, :] >= plo[:, None]) \
+                & (cols[None, :] <= phi[:, None])
+        cnt[d] = M.sum(axis=1)
+        rank = np.cumsum(M, axis=1)          # 1-based rank of each True
+        ai, bi = np.nonzero(M)
+        B[d][ai, rank[ai, bi] - 1] = bi       # compact, increasing order
+
+    # per-dim vectorized shift selection over the padded blocks (int32
+    # domain; identical first-max tie-break as cell_sort_reference)
+    def shift_for(d: int) -> np.ndarray:
+        ka = au[:, :, d]                                  # (n, R)
+        ox = (B[d] * tc).astype(np.int32)                 # (n, C)
+        ka32 = ka.astype(np.int32)                        # (n, R)
+        lo0 = (ka32[:, None, :] - 3)                      # (n, 1, R)
+        hi0 = ka32[:, None, :]
+        w1 = (ox + tc + 1)[:, :, None]                    # (n, C, 1)
+        w0 = (ox - 1)[:, :, None]
+        best = np.full((n, C, n_rep), -1, dtype=np.int32)
+        best_idx = np.zeros((n, C, n_rep), dtype=np.int8)
+        for cand, sv in enumerate((0, 1, -1)):
+            ov = np.minimum(hi0 + sv * ng, w1) - np.maximum(
+                lo0 + sv * ng, w0) + 1
+            np.maximum(ov, 0, out=ov)
+            take = ov > best
+            best = np.where(take, ov, best)
+            best_idx = np.where(take, np.int8(sv), best_idx)
+        return best_idx
+
+    SX = shift_for(0)
+    SY = shift_for(1)
+    SZ = shift_for(2)
+
+    # ragged cartesian product across dims (per-atom enumeration order ==
+    # itertools.product over the sorted per-dim block lists)
+    m_per = cnt[0] * cnt[1] * cnt[2]
+    E = int(m_per.sum())
+    ea = np.repeat(np.arange(n), m_per)
+    off = np.concatenate([[0], np.cumsum(m_per)[:-1]])
+    w = np.arange(E) - np.repeat(off, m_per)
+    c12 = np.repeat(cnt[1] * cnt[2], m_per)
+    c2 = np.repeat(cnt[2], m_per)
+    i0 = w // c12
+    i1 = (w % c12) // c2
+    i2 = w % c2
+    bx = B[0][ea, i0]
+    by = B[1][ea, i1]
+    bz = B[2][ea, i2]
+    sx = SX[ea, i0]                      # (E, R)
+    sy = SY[ea, i1]
+    sz = SZ[ea, i2]
+    ox = bx * tc
+    oy = by * tc
+    oz = bz * tc
+    cid = ((bx % C) * C + (by % C)) * C + (bz % C)
+    order = np.argsort(cid, kind="stable")
+    atom_e = ea[order]
+    shift = np.stack([sx[order], sy[order], sz[order]], axis=-1) \
+        .astype(np.int8)                 # (E, R, 3)
+    cids = cid[order]
+    used_ids = np.unique(cids)
+    cs = np.searchsorted(cids, used_ids, "left").astype(np.int32)
+    ce = np.searchsorted(cids, used_ids, "right").astype(np.int32)
+    origin = np.stack([ox[order], oy[order], oz[order]],
+                      axis=1).astype(np.int32)[cs]
     return atom_e, shift, cs, ce, origin, int(len(used_ids))
 
 

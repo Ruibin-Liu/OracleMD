@@ -468,9 +468,14 @@ def _cell_sort_vec(x: np.ndarray, box, ng: int, tc: int):
         B[d][ai, rank[ai, bi] - 1] = bi       # compact, increasing order
 
     # per-dim vectorized shift selection over the padded blocks (int32
-    # domain; identical first-max tie-break as cell_sort_reference)
+    # domain; identical first-max tie-break as cell_sort_reference).
+    # NOTE a closed-form replacement (drop s=-1 as "halo-only", select
+    # s=+1 by its overlap>0 alone) was REVERTED: it changed flush-relevant
+    # staging in seam corners (placement/owner tests caught it) -- the
+    # three-candidate max-overlap with the exact first-max tie-break is
+    # the verified form.  Further speedup must preserve it exactly.
     def shift_for(d: int) -> np.ndarray:
-        ka = au[:, :, d]                                  # (n, R)
+        ka = au[:, :, d].astype(np.int32)                 # (n, R)
         ox = (B[d] * tc).astype(np.int32)                 # (n, C)
         ka32 = ka.astype(np.int32)                        # (n, R)
         lo0 = (ka32[:, None, :] - 3)                      # (n, 1, R)

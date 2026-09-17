@@ -728,4 +728,6 @@ A/B 交替计时(同进程、共租户同污染、比值有效):`-prec-div=false
 
 **时序(UNUSABLE 级——共租 util 34-60% 波动 + 列表口径与 E0g 不同,不可作门)**:direct fp64 43.8 ms / Q24.40 70.2 ms(**同列表比值 1.55-1.71× 稳定复现**,纯算术形态差);spread kernel-only 48.0 ms(E=480k vs e0h2 112k,副本噪声口径差异 + 竞争);FFT 链 r2c 38.7 ms(子批 8×24 峰值减半,E0e batch 无关);interp 30.8 ms;积分+真 RNG 401 ms(**真 philox4x64+ziggurat 的 fresh-stream-per-draw 组合成本,占位符地板 1.5 ms 需重定标**)。
 
+**cell_sort 向量化落地(本段完成)**:60k/R48 从「>45 s 未完成」→ **4.7 s**(布尔矩阵按 C 列精确并集去重 + int32 三候选重叠选择,枚举序/稳定排序与参考逐位一致,CI 数组位级等价测试守护)。**回退记录**:闭式化尝试(去掉 s=−1"仅 halo"候选、s=+1 单独判据)被 placement/owner 测试当场抓住——seam 角落的 flush 相关 staging 被改变;三候选 max-overlap + 首最大平局是已验证形态,进一步提速必须逐位保持其行为。∀K 复跑 10.2 s 通过,e0n/e0o 复跑全绿。
+
 **生产阻塞项与待办**:①cell_sort 进一步优化(4.7 s/窗口仍重,目标 CUDA 预处理或 numba;正确性已锁定);②真独占窗口重测全部分量行(E0g 同口径列表 + 无竞争);③Q24.40 形态地板行重定标(E0g-Q24.40 变体 bench);④真 RNG 积分地板重定标;⑤FFT r2c vs c2c 口径声明(13.3 为 c2c,r2c 更廉价)。

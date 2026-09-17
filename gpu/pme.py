@@ -467,23 +467,22 @@ def _cell_sort_vec(x: np.ndarray, box, ng: int, tc: int):
         ai, bi = np.nonzero(M)
         B[d][ai, rank[ai, bi] - 1] = bi       # compact, increasing order
 
-    # per-dim vectorized shift selection over the padded blocks (int32
-    # domain; identical first-max tie-break as cell_sort_reference).
-    # NOTE a closed-form replacement (drop s=-1 as "halo-only", select
-    # s=+1 by its overlap>0 alone) was REVERTED: it changed flush-relevant
-    # staging in seam corners (placement/owner tests caught it) -- the
-    # three-candidate max-overlap with the exact first-max tie-break is
-    # the verified form.  Further speedup must preserve it exactly.
-    def shift_for(d: int) -> np.ndarray:
-        ka = au[:, :, d].astype(np.int32)                 # (n, R)
-        ox = (B[d] * tc).astype(np.int32)                 # (n, C)
-        ka32 = ka.astype(np.int32)                        # (n, R)
-        lo0 = (ka32[:, None, :] - 3)                      # (n, 1, R)
-        hi0 = ka32[:, None, :]
-        w1 = (ox + tc + 1)[:, :, None]                    # (n, C, 1)
-        w0 = (ox - 1)[:, :, None]
-        best = np.full((n, C, n_rep), -1, dtype=np.int32)
-        best_idx = np.zeros((n, C, n_rep), dtype=np.int8)
+    # per-dim shift selection, COMPACTED over the actual (atom, slot)
+    # pairs (~1.3 blocks/atom vs the C=16 padded span; 10x less work).
+    # Identical first-max tie-break as cell_sort_reference; the values
+    # depend only on (ka, ox) so the padded table is rebuilt by scatter.
+    SX = []
+    for d in range(3):
+        bd_atom, bd_slot = np.nonzero(B[d] >= 0)
+        bd_blk = B[d][bd_atom, bd_slot]
+        ka_c = au[bd_atom, :, d].astype(np.int32)          # (K, R)
+        ox_c = (bd_blk * tc).astype(np.int32)              # (K,)
+        lo0 = ka_c - 3
+        hi0 = ka_c
+        w1 = (ox_c + tc + 1)[:, None]                      # (K, 1)
+        w0 = (ox_c - 1)[:, None]
+        best = np.full((len(bd_atom), n_rep), -1, dtype=np.int32)
+        best_idx = np.zeros((len(bd_atom), n_rep), dtype=np.int8)
         for cand, sv in enumerate((0, 1, -1)):
             ov = np.minimum(hi0 + sv * ng, w1) - np.maximum(
                 lo0 + sv * ng, w0) + 1
@@ -491,11 +490,10 @@ def _cell_sort_vec(x: np.ndarray, box, ng: int, tc: int):
             take = ov > best
             best = np.where(take, ov, best)
             best_idx = np.where(take, np.int8(sv), best_idx)
-        return best_idx
-
-    SX = shift_for(0)
-    SY = shift_for(1)
-    SZ = shift_for(2)
+        sx_padded = np.zeros((n, C, n_rep), dtype=np.int8)
+        sx_padded[bd_atom, bd_slot, :] = best_idx
+        SX.append(sx_padded)
+    SX = tuple(SX)
 
     # ragged cartesian product across dims (per-atom enumeration order ==
     # itertools.product over the sorted per-dim block lists)
@@ -512,9 +510,9 @@ def _cell_sort_vec(x: np.ndarray, box, ng: int, tc: int):
     bx = B[0][ea, i0]
     by = B[1][ea, i1]
     bz = B[2][ea, i2]
-    sx = SX[ea, i0]                      # (E, R)
-    sy = SY[ea, i1]
-    sz = SZ[ea, i2]
+    sx = SX[0][ea, i0]                   # (E, R)
+    sy = SX[1][ea, i1]
+    sz = SX[2][ea, i2]
     ox = bx * tc
     oy = by * tc
     oz = bz * tc

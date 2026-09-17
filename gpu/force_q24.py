@@ -175,14 +175,22 @@ def direct_forces_q(x, q, sig, eps, nlist, ncnt, alpha: float, rc: float,
         bd = np.linalg.inv(inv_box)  # opus mic transforms via inv(inv_box)
         ld = np.diag(bd)
         ild = np.diag(inv_box)
-    xh = np.ascontiguousarray(cp.asnumpy(x) if hasattr(x, "get") else x,
-                              dtype=np.float64)
+    def _d(a, dt=np.float64):
+        """host-or-device tolerant contiguous upload."""
+        if hasattr(a, "get"):
+            return cp.ascontiguousarray(a, dtype=dt)
+        return cp.asarray(np.ascontiguousarray(a, dtype=dt))
+
+    if hasattr(x, "get"):
+        x_dev = cp.ascontiguousarray(x, dtype=np.float64)
+        xh = cp.asnumpy(x)
+    else:
+        xh = np.ascontiguousarray(x, dtype=np.float64)
+        x_dev = cp.asarray(xh)
     Fq = cp.zeros(N * R * 3, dtype=cp.int64)
     sticky = cp.zeros(1, dtype=cp.int32)
-    args = (cp.asarray(xh), cp.asarray(np.ascontiguousarray(nlist)),
-            cp.asarray(ncnt), cp.asarray(np.ascontiguousarray(q, np.float64)),
-            cp.asarray(np.ascontiguousarray(sig, np.float64)),
-            cp.asarray(np.ascontiguousarray(eps, np.float64)),
+    args = (x_dev, _d(nlist, np.int32), _d(ncnt, np.int32),
+            _d(q), _d(sig), _d(eps),
             Fq, sticky, N, R, maxnb, 1 if box is not None else 0,
             rc * rc, alpha)
     if box is not None:

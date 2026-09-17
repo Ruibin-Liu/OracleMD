@@ -462,9 +462,11 @@ def interp_forces(x, q, pot, box, *, ng: int = 128):
     (sequential vs pairwise 64-point sum); sign/gradient semantics exact."""
     import cupy as cp
     _, _, _, k_interp = _module(ng, 12)
-    x = cp.asarray(np.ascontiguousarray(x, dtype=np.float64))
-    q = cp.asarray(np.ascontiguousarray(q, dtype=np.float64))
-    pot = cp.asarray(np.ascontiguousarray(pot, dtype=np.float64))
+    dev = lambda a: cp.asarray(np.ascontiguousarray(a, dtype=np.float64)) \
+        if not (hasattr(a, "get")) else cp.ascontiguousarray(a, np.float64)
+    x = dev(x)
+    q = dev(q)
+    pot = dev(pot)
     N, R, _ = x.shape
     inv = _inv_diag(box)
     F = cp.zeros(N * R * 3)

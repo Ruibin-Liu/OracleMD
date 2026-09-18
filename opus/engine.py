@@ -28,17 +28,22 @@ class ForceAccumulator:
     def add_to(self, atom: int, contrib: np.ndarray):
         """contrib: (R, 3) float64 — quantized once, added exactly.
 
-        Overflow-safe: contributions beyond the int64 raw range (i.e.
-        beyond the Q24.40 physical format bound) are detected in the
-        float domain BEFORE the cast (casting a huge float to int64 wraps
-        silently — that is the disaster this guards against).
+        Overflow-safe: contributions beyond the clamp bound are detected in
+        the float domain BEFORE the cast and clamped to +/-2^62 (exact in
+        float64 AND in int64 -- fxp.add_f64 precedent).  Do NOT compare
+        against float(vmax): float64(2^63-1) rounds UP to exactly 2^63, so
+        |scaled| == 2^63 escapes a `> vmax` guard and astype(int64) wraps
+        it to INT64_MIN (silent sign flip; and even FLAGGED values wrap
+        when written back as sign*vmax through float64).  Registered
+        2026-09-18 (docs/reviews/opus5-review.md), fixed same day.
         """
         scaled = np.rint(contrib * (1 << self.acc.frac_bits))
-        bad = ~np.isfinite(scaled) | (np.abs(scaled) > self.acc.vmax)
+        big = float(1 << 62)
+        bad = ~np.isfinite(scaled) | (np.abs(scaled) > big)
         if bad.any():
             self.acc.sticky_overflow = True
             self.acc.n_saturations += int(bad.sum())
-            scaled = np.where(bad, np.sign(scaled) * self.acc.vmax, scaled)
+            scaled = np.clip(scaled, -(1 << 62), (1 << 62))
         q = scaled.astype(np.int64)
         cur = self.acc.acc[atom]
         s = cur.astype(object) + q.astype(object)

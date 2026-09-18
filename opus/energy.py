@@ -33,10 +33,11 @@ class EnergyAccumulator:
         if v.shape[0] == 1 and self.R > 1:
             v = np.repeat(v, self.R)
         scaled = np.rint(v * (1 << self.frac_bits))
-        bad = ~np.isfinite(scaled) | (np.abs(scaled) > self.vmax)
+        big = float(1 << 62)  # see engine.ForceAccumulator.add_to note
+        bad = ~np.isfinite(scaled) | (np.abs(scaled) > big)
         if bad.any():
             self.sticky_overflow = True
-            scaled = np.where(bad, np.sign(scaled) * self.vmax, scaled)
+            scaled = np.clip(scaled, -(1 << 62), (1 << 62))
         q = scaled.astype(np.int64)
         if component not in self.reg:
             self.reg[component] = np.zeros(self.R, dtype=np.int64)

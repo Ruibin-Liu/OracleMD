@@ -109,8 +109,10 @@ def mirror_opus(x, q, sig, eps, pairs, alpha, rc, box=None):
         fi = coef[:, None] * diff
         for at, f in ((i, fi), (j, -fi)):
             scaled = np.rint(f * scale)
-            bad = ~np.isfinite(scaled) | (np.abs(scaled) > vmax)
-            scaled = np.where(bad, np.sign(scaled) * vmax, scaled)
+            big = float(1 << 62)  # opus add_to 修复后的守卫+钳位 (2026-09-18)
+            bad = ~np.isfinite(scaled) | (np.abs(scaled) > big)
+            scaled = np.clip(scaled, -(1 << 62), (1 << 62)) if bad.any() \
+                else scaled
             # opus add_to: RUNNING saturation of the accumulator (object
             # arithmetic) -- raw int64 wrap diverges once multiple
             # saturated contributions stack

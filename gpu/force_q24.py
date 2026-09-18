@@ -101,19 +101,21 @@ extern "C" __global__ void direct_q(
         double fx = coef * dx, fy = coef * dy, fz = coef * dz;
         // clamp bound: float(2^63-1) rounds UP to 2^63, whose llrint
         // overflows int64 (asymmetric INT64_MIN garbage, Newton-3 breaks).
-        // Saturate to +/-2^62 instead -- same sticky semantics, exactly
-        // representable (E0o hunt 2026-09-10).
+        // Guard AND saturate at +/-2^62 -- exactly representable, sticky
+        // semantics, bitwise-portable across device/host/opus (2026-09-18:
+        // unified with the opus add_to fix; was guard-at-2^63 which left
+        // the (2^62, 2^63] band divergent vs host).
         double sx = fx * scale, sy = fy * scale, sz = fz * scale;
         double bnd = vmaxd * 0.25;  // 2^62
-        if (!(fabs(sx) <= vmaxd)) {
+        if (!(fabs(sx) <= bnd)) {
             atomicAdd(sticky, 1);
             sx = (sx > 0.0) ? bnd : -bnd;
         }
-        if (!(fabs(sy) <= vmaxd)) {
+        if (!(fabs(sy) <= bnd)) {
             atomicAdd(sticky, 1);
             sy = (sy > 0.0) ? bnd : -bnd;
         }
-        if (!(fabs(sz) <= vmaxd)) {
+        if (!(fabs(sz) <= bnd)) {
             atomicAdd(sticky, 1);
             sz = (sz > 0.0) ? bnd : -bnd;
         }
@@ -297,10 +299,11 @@ def direct_q_mirror_kernel(x, q, sig, eps, nlist, ncnt, alpha: float,
                 coef = (dulj + duc) * inside * inv_r
                 f = np.array([coef * dx, coef * dy, coef * dz])
                 scaled = np.rint(f * scale)
-                bad = ~np.isfinite(scaled) | (np.abs(scaled) > vmax)
+                big = float(1 << 62)  # unified with kernel (guard at bnd)
+                bad = ~np.isfinite(scaled) | (np.abs(scaled) > big)
                 if bad.any():
                     sticky += int(bad.sum())
-                    scaled = np.where(bad, np.sign(scaled) * vmax, scaled)
+                    scaled = np.clip(scaled, -(1 << 62), (1 << 62))
                 acc += scaled.astype(np.int64)
             Fq[a, r] = acc
     return Fq, sticky

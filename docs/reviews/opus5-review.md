@@ -747,9 +747,11 @@ A/B 交替计时(同进程、共租户同污染、比值有效):`-prec-div=false
 
 **同型缺陷普查**:`opus/energy.py::EnergyAccumulator.add` 逐字复刻同一缺陷模式(`np.abs(scaled) > vmax` + `sign(scaled)*vmax` 写回),宿主侧全套 CI 运行时其 RuntimeWarning(invalid value in cast)已在 `test_saturation_sticky_fires` 现场可见(2026-09-18 确认)——规格修订时两处同修。
 
-**为何登记而不就地修**:opus 是语义 oracle;`gpu/force_q24.py::direct_q_mirror_kernel` 按「镜像忠实复刻」纪律逐位复刻含本缺陷(饱和域 mirror ≡ opus 位级测试依赖此一致性);CUDA kernel 已修(钳 ±2^62)且测试体系以最小间距拒绝采样把体系维持包络外。就地改 opus 会同时波及 mirror、CI 位级测试与 spec 饱和域语义,属规格修订级变更,须与 Q24.40 地板重定标同窗处理。
+**当时登记而不就地修的考虑(同日已由四层同修解除,见末段)**:opus 是语义 oracle;`gpu/force_q24.py::direct_q_mirror_kernel` 按「镜像忠实复刻」纪律逐位复刻含本缺陷(饱和域 mirror ≡ opus 位级测试依赖此一致性);CUDA kernel 已修(钳 ±2^62)且测试体系以最小间距拒绝采样把体系维持包络外。就地改 opus 会同时波及 mirror、CI 位级测试与 spec 饱和域语义——后确认四层同修 + 全套门验证即可闭环,见末段。
 
 **触发包络**:单贡献量化幅值 ≥ 2^63(Q24.40 实单位力 ≥ 2^23 ≈ 8.4e6)——物理不可达,守卫的存在意义恰是兜住「不可能」输入,而它在正侧恰好兜不住。
+
+**修复落地(同日,v1.1.8 同窗)**:登记当日下午即落地——四层饱和语义统一为 `|scaled| > 2^62 → sticky + 钳 ±2^62`(fxp.add_f64 先例):`opus/engine.py::add_to`、`opus/energy.py::add` 改掉缺陷模式;`gpu/force_q24.py` 宿主镜像同步(钳 ±2^62),**设备核 guard 从 2^63 收紧到 2^62**(原留 (2^62,2^63] 带与宿主分歧);`tests/test_gpu_force_q24.py` 的测试内 mirror_opus 同步。饱和域现在四层(device/mirror/opus-engine/opus-energy)行为一致;包络内零变化。验证:`test_water_periodic_mic`(rc=5.0 > 半盒,构造性饱和)修复前后镜像-对-opus 位级恢复一致;E0o/∀K pod 复跑全绿;本地全套绿。原「登记而不就地修」的理由(怕动语义)由「四层同修 + 全套门验证」解除。
 
 ---
 

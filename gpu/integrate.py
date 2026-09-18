@@ -108,10 +108,15 @@ extern "C" __global__ void drift_orn(
                 if (rabs < ki[idx]) break;
                 if (idx == 0) {
                     for (int tail = 0; tail < 100000; ++tail) {
+                        // cast BEFORE negation (see rand.py
+                        // ziggurat_normal note -- the u64 wrap made
+                        // this loop spin to exhaustion, returning the
+                        // unstripped value, and made the unbounded
+                        // forms hang)
                         double xx = -nor_inv_r
-                            * log1p(-(rng.next_u64() >> 11)
+                            * log1p(-((double)(rng.next_u64() >> 11))
                                     * (1.0 / 9007199254740992.0));
-                        double yy = -log1p(-(rng.next_u64() >> 11)
+                        double yy = -log1p(-((double)(rng.next_u64() >> 11))
                                            * (1.0 / 9007199254740992.0));
                         if (yy + yy > xx * xx) {
                             g1 = ((rabs >> 8) & 0x1) ? -(nor_r + xx)

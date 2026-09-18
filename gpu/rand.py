@@ -247,9 +247,14 @@ __device__ __noinline__ double ziggurat_normal(
         if (rabs < ki[idx]) return x;  // 99.3%
         if (idx == 0) {
             for (;;) {
-                double xx = -nor_inv_r * log1p(-(rng->next_u64() >> 11)
+                // -(u64) in C wraps mod 2^64 (silent +2048 after *2^-53,
+                // strip never accepts -> infinite loop = the registered
+                // "NVRTC hang"; bounded forms spin to exhaustion and
+                // return the UNSTRIPPED value).  Cast BEFORE negation:
+                // numpy next_double() is ((u64>>11) * 2^-53) as double.
+                double xx = -nor_inv_r * log1p(-((double)(rng->next_u64() >> 11))
                                                * (1.0 / 9007199254740992.0));
-                double yy = -log1p(-(rng->next_u64() >> 11)
+                double yy = -log1p(-((double)(rng->next_u64() >> 11))
                                    * (1.0 / 9007199254740992.0));
                 if (yy + yy > xx * xx)
                     return ((rabs >> 8) & 0x1) ? -(nor_r + xx)
@@ -302,9 +307,10 @@ __device__ __forceinline__ double gauss_stream1(
         if (rabs < ki[idx]) return x;
         if (idx == 0) {
             for (;;) {
-                double xx = -nor_inv_r * log1p(-(rng.next_u64() >> 11)
+                // cast BEFORE negation (see ziggurat_normal note)
+                double xx = -nor_inv_r * log1p(-((double)(rng.next_u64() >> 11))
                                                * (1.0 / 9007199254740992.0));
-                double yy = -log1p(-(rng.next_u64() >> 11)
+                double yy = -log1p(-((double)(rng.next_u64() >> 11))
                                    * (1.0 / 9007199254740992.0));
                 if (yy + yy > xx * xx)
                     return ((rabs >> 8) & 0x1) ? -(nor_r + xx)
@@ -360,9 +366,10 @@ extern "C" __global__ void ziggurat_probe(
             if (rabs < ki[idx]) { acc += x; break; }
             if (idx == 0) {
                 for (;;) {
-                    double xx = -nor_inv_r * log1p(-(rng.next_u64() >> 11)
+                    // cast BEFORE negation (see ziggurat_normal note)
+                    double xx = -nor_inv_r * log1p(-((double)(rng.next_u64() >> 11))
                                                    * (1.0 / 9007199254740992.0));
-                    double yy = -log1p(-(rng.next_u64() >> 11)
+                    double yy = -log1p(-((double)(rng.next_u64() >> 11))
                                        * (1.0 / 9007199254740992.0));
                     if (yy + yy > xx * xx) {
                         acc += ((rabs >> 8) & 0x1) ? -(nor_r + xx)

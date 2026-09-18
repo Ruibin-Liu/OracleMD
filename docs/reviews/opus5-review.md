@@ -731,3 +731,20 @@ A/B 交替计时(同进程、共租户同污染、比值有效):`-prec-div=false
 **cell_sort 向量化落地(本段完成)**:60k/R48 从「>45 s 未完成」→ **4.7 s**(布尔矩阵按 C 列精确并集去重 + int32 三候选重叠选择,枚举序/稳定排序与参考逐位一致,CI 数组位级等价测试守护)。**回退记录**:闭式化尝试(去掉 s=−1"仅 halo"候选、s=+1 单独判据)被 placement/owner 测试当场抓住——seam 角落的 flush 相关 staging 被改变;三候选 max-overlap + 首最大平局是已验证形态,进一步提速必须逐位保持其行为。∀K 复跑 10.2 s 通过,e0n/e0o 复跑全绿。
 
 **生产阻塞项与待办**:①cell_sort 进一步优化(4.7 s/窗口仍重,目标 CUDA 预处理或 numba;正确性已锁定);②真独占窗口重测全部分量行(E0g 同口径列表 + 无竞争);③Q24.40 形态地板行重定标(E0g-Q24.40 变体 bench);④真 RNG 积分地板重定标;⑤FFT r2c vs c2c 口径声明(13.3 为 c2c,r2c 更廉价)。
+
+---
+
+# 登记:opus add_to 2^63 比较边界缺陷,两层形态实测钉死(2026-09-18,待办④关闭)
+
+**现场**:`opus/engine.py::ForceAccumulator.add_to` 溢出守卫 `np.abs(scaled) > self.acc.vmax`(float64 数组 vs int64 标量)与饱和写回 `np.where(bad, np.sign(scaled)*vmax, scaled)`。**实测(numpy 2.5.2,uv 环境)**:
+
+- **L1 守卫阈值层**:`float64(vmax) == 2^63` 精确成立(2^63−1 不可被 float64 表示,NumPy 提升时向上舍入)→ 守卫实际阈值是 2^63 而非 vmax。`scaled == +2^63`(即贡献恰好 +2^23 Q24.40 实单位)**不触发 bad、不设 sticky**,`astype(int64)` 回绕为 INT64_MIN = vmin —— 正→负静默符号翻转,连 sticky_overflow 都不置位,最静默的一档。
+- **L2 饱和写回层**:`np.sign(scaled)*vmax` 是 float64 乘法,2^63−1 再次舍入为 2^63 → **连被 flag 的正溢出也在 cast 时回绕**:正溢出支路从不产出 +vmax,永远落 vmin(numpy 发 RuntimeWarning 但值照错);负溢出支路反而正确(−2^63 float cast 精确 = vmin,语义恰对)。即整个正向饱和支路是坏的。
+- **牛顿第三定律非对称的机制补全**:N3 对 f/−f → 正侧走坏支路落 INT64_MIN,负侧走对支路落 vmin,作用力对在饱和域不再相反——上一段观察到的现象由此两层联合解释。
+- 边界以下安全裕量:|scaled| ≤ 2^63−1024(该量级 float64 间距 1024)cast 精确且真实值 ≤ vmax,无问题。
+
+**正确修法(登记备将来 opus 规格修订;本轮不动)**:守卫谓词改 `np.abs(scaled) >= 2.0**63`(超出 vmax 的最小 float64 恰为 2^63,>= 才是真「> vmax」);写回禁止把 float 重新乘出界——cast 前钳位 ±2^62(设备侧先例,转换精确)或在 int 域饱和。
+
+**为何登记而不就地修**:opus 是语义 oracle;`gpu/force_q24.py::direct_q_mirror_kernel` 按「镜像忠实复刻」纪律逐位复刻含本缺陷(饱和域 mirror ≡ opus 位级测试依赖此一致性);CUDA kernel 已修(钳 ±2^62)且测试体系以最小间距拒绝采样把体系维持包络外。就地改 opus 会同时波及 mirror、CI 位级测试与 spec 饱和域语义,属规格修订级变更,须与 Q24.40 地板重定标同窗处理。
+
+**触发包络**:单贡献量化幅值 ≥ 2^63(Q24.40 实单位力 ≥ 2^23 ≈ 8.4e6)——物理不可达,守卫的存在意义恰是兜住「不可能」输入,而它在正侧恰好兜不住。

@@ -65,6 +65,59 @@ _KERNEL_TMPL = r"""
 #define TC %(tc)d
 #define TS %(ts)d
 
+// closed-form M4 weights + M3-difference derivative for interp_gather.
+// interp is DUAL-GATED (E0n: rel < 1e-10, not bitwise -- numpy pairwise
+// vs sequential sums already differ), so the opus-faithful recursive
+// cbs() (2 genuine IEEE /3 divisions per cbs(4) call) is replaced by the
+// piecewise cubic form here -- the division chain was measured at ~70 percent of
+// interp cost (2026-09-18 attribution).  Anchors: integer ops identical
+// to wts4.  Values differ from the recursive form by ~1e-15 rel -- well
+// inside the dual gate.  spread_tile keeps the recursive form (bitwise
+// locked via v1 == tile == opus).
+__device__ __forceinline__ void wts4_cf(double u, int* g, int* gu,
+                                        double* w, double* dw) {
+    double xg = u * (double)NG;
+    int a = (int)floor(xg);
+    #pragma unroll
+    for (int t = 0; t < 4; ++t) {
+        int gg = a - 3 + t;
+        gu[t] = gg;
+        g[t] = gg & (NG - 1);
+        double xx = xg - (double)gg;   // in [0, 4)
+        double wv, m3a, m3b;
+        if (xx < 1.0) {
+            wv = xx * xx * xx / 6.0;
+            m3a = xx * xx / 2.0;
+        } else if (xx < 2.0) {
+            wv = ((-3.0 * xx * xx * xx + 12.0 * xx * xx) - 12.0 * xx + 4.0)
+                 / 6.0;
+            m3a = (-2.0 * xx * xx + 6.0 * xx - 3.0) / 2.0;
+        } else if (xx < 3.0) {
+            wv = ((3.0 * xx * xx * xx - 24.0 * xx * xx) + 60.0 * xx - 44.0)
+                 / 6.0;
+            double v = 3.0 - xx;
+            m3a = v * v / 2.0;
+        } else {
+            double v = 4.0 - xx;
+            wv = v * v * v / 6.0;
+            m3a = 0.0;
+        }
+        double xm = xx - 1.0;
+        if (xm <= 0.0) {
+            m3b = 0.0;
+        } else if (xm < 1.0) {
+            m3b = xm * xm / 2.0;
+        } else if (xm < 2.0) {
+            m3b = (-2.0 * xm * xm + 6.0 * xm - 3.0) / 2.0;
+        } else {
+            double v = 3.0 - xm;
+            m3b = v * v / 2.0;
+        }
+        w[t] = wv;
+        dw[t] = (m3a - m3b) * (double)NG;
+    }
+}
+
 // opus.pme.cardinal_bspline, op-for-order exact (x/(p-1))*M(x)
 // + ((p-x)/(p-1))*M(x-1); -fmad=false keeps the + uncontracted.
 __device__ __forceinline__ double cbs(int p, double x) {
@@ -238,28 +291,10 @@ extern "C" __global__ void interp_gather(
     coords_u(x, ((long long)a * R + r) * 3, invlx, invly, invlz, &u0, &u1, &u2);
     int ax[4], ay[4], az[4], axu[4], ayu[4], azu[4];
     double wx[4], wy[4], wz[4];
-    wts4(u0, ax, axu, wx);
-    wts4(u1, ay, ayu, wy);
-    wts4(u2, az, azu, wz);
     double dwx[4], dwy[4], dwz[4];
-    {
-        double xg = u0 * (double)NG;
-        int a0 = (int)floor(xg);
-        for (int t = 0; t < 4; ++t)
-            dwx[t] = cbs_deriv(4, xg - (double)(a0 - 3 + t)) * (double)NG;
-    }
-    {
-        double xg = u1 * (double)NG;
-        int a0 = (int)floor(xg);
-        for (int t = 0; t < 4; ++t)
-            dwy[t] = cbs_deriv(4, xg - (double)(a0 - 3 + t)) * (double)NG;
-    }
-    {
-        double xg = u2 * (double)NG;
-        int a0 = (int)floor(xg);
-        for (int t = 0; t < 4; ++t)
-            dwz[t] = cbs_deriv(4, xg - (double)(a0 - 3 + t)) * (double)NG;
-    }
+    wts4_cf(u0, ax, axu, wx, dwx);
+    wts4_cf(u1, ay, ayu, wy, dwy);
+    wts4_cf(u2, az, azu, wz, dwz);
     const double* g = pot + (long long)r * NG * NG * NG;
     double qi = q[a];
     double sx = 0.0, sy = 0.0, sz = 0.0;

@@ -147,6 +147,72 @@ __device__ __forceinline__ void wts4(double u, int* g, int* gu, double* w) {
     }
 }
 
+// Pyramid-shared wts4 for spread_tile: the four cbs(4, .) calls share
+// their M3/M2/M1 subevaluations instead of re-expanding the full
+// recursion tree per t.  BITWISE == the recursive form: every level uses
+// the identical expression text (divide-then-multiply, l+r order), and in
+// in this domain (anchors a >= 3: all subtractions reduce magnitude and
+// are exact in f64), x_t-1.0 == x_{t+1} exactly and sharing is
+// value-identical.  ~8x fewer instructions than the fully-inlined
+// recursion tree -- the measured spread cost driver (2026-09-18: division
+// recip-mul probe was SLOWER, noinline probe flat; instruction count is
+// the mechanism).  spread_v1 keeps the plain recursive form so E0n's
+// tile==v1 gate double-checks this pyramid bitwise.
+__device__ __forceinline__ void wts4_py(double u, int* g, int* gu,
+                                        double* w) {
+    double xg = u * (double)NG;
+    int a = (int)floor(xg);
+    int gg0 = a - 3;
+    #pragma unroll
+    for (int t = 0; t < 4; ++t) {
+        gu[t] = gg0 + t;
+        g[t] = (gg0 + t) & (NG - 1);
+    }
+    if (gg0 < 0) {
+        // seam corner: xg - (negative k) jumps to a COARSER binade and can
+        // round, breaking the x_t-1.0 == x_{t+1} identity the sharing
+        // relies on (caught bitwise by E0n's seam-stressed atoms).  Fall
+        // back to the verbatim recursive form for these atoms.
+        #pragma unroll
+        for (int t = 0; t < 4; ++t)
+            w[t] = cbs(4, xg - (double)(gg0 + t));
+        return;
+    }
+    double x0 = xg - (double)gg0;          // [3, 4)
+    double x1 = xg - (double)(gg0 + 1);    // [2, 3)
+    double x2 = xg - (double)(gg0 + 2);    // [1, 2)
+    double x3 = xg - (double)(gg0 + 3);    // [0, 1)
+    double xm1 = x3 - 1.0, xm2 = x3 - 2.0, xm3 = x3 - 3.0;
+    // level 1: (0.0 <= y && y < 1.0) ? 1.0 : 0.0   (cbs base text)
+    double b0 = (0.0 <= x0 && x0 < 1.0) ? 1.0 : 0.0;
+    double b1 = (0.0 <= x1 && x1 < 1.0) ? 1.0 : 0.0;
+    double b2 = (0.0 <= x2 && x2 < 1.0) ? 1.0 : 0.0;
+    double b3 = (0.0 <= x3 && x3 < 1.0) ? 1.0 : 0.0;
+    double bm1 = (0.0 <= xm1 && xm1 < 1.0) ? 1.0 : 0.0;
+    double bm2 = (0.0 <= xm2 && xm2 < 1.0) ? 1.0 : 0.0;
+    double bm3 = (0.0 <= xm3 && xm3 < 1.0) ? 1.0 : 0.0;
+    // level 2: (y / 1.0) * M1(y) + ((2.0 - y) / 1.0) * M1(y - 1.0)
+    //          (division by 1.0 is exact identity in IEEE -- written plain)
+    double c20 = x0 * b0 + (2.0 - x0) * b1;
+    double c21 = x1 * b1 + (2.0 - x1) * b2;
+    double c22 = x2 * b2 + (2.0 - x2) * b3;
+    double c23 = x3 * b3 + (2.0 - x3) * bm1;
+    double c2m1 = xm1 * bm1 + (2.0 - xm1) * bm2;
+    double c2m2 = xm2 * bm2 + (2.0 - xm2) * bm3;
+    // level 3: (y / 2.0) * M2(y) + ((3.0 - y) / 2.0) * M2(y - 1.0)
+    double d30 = (x0 / 2.0) * c20 + ((3.0 - x0) / 2.0) * c21;
+    double d31 = (x1 / 2.0) * c21 + ((3.0 - x1) / 2.0) * c22;
+    double d32 = (x2 / 2.0) * c22 + ((3.0 - x2) / 2.0) * c23;
+    double d33 = (x3 / 2.0) * c23 + ((3.0 - x3) / 2.0) * c2m1;
+    double d3m1 = (xm1 / 2.0) * c2m1 + ((3.0 - xm1) / 2.0) * c2m2;
+    // level 4: (y / 3.0) * M3(y) + ((4.0 - y) / 3.0) * M3(y - 1.0)
+    //          (the /3.0 divisions are the genuine ones -- kept verbatim)
+    w[0] = (x0 / 3.0) * d30 + ((4.0 - x0) / 3.0) * d31;
+    w[1] = (x1 / 3.0) * d31 + ((4.0 - x1) / 3.0) * d32;
+    w[2] = (x2 / 3.0) * d32 + ((4.0 - x2) / 3.0) * d33;
+    w[3] = (x3 / 3.0) * d33 + ((4.0 - x3) / 3.0) * d3m1;
+}
+
 // frac %% 1.0 (numpy) == exact fmod + sign fix (no rounding either way)
 __device__ __forceinline__ double uwrap(double v) {
     double m = fmod(v, 1.0);
@@ -225,9 +291,9 @@ extern "C" __global__ void spread_tile(
                  &u0, &u1, &u2);
         int ax[4], ay[4], az[4], axu[4], ayu[4], azu[4];
         double wx[4], wy[4], wz[4];
-        wts4(u0, ax, axu, wx);
-        wts4(u1, ay, ayu, wy);
-        wts4(u2, az, azu, wz);
+        wts4_py(u0, ax, axu, wx);
+        wts4_py(u1, ay, ayu, wy);
+        wts4_py(u2, az, azu, wz);
         int sx = (int)shift[(e * R + r) * 3] * NG;
         int sy = (int)shift[(e * R + r) * 3 + 1] * NG;
         int sz = (int)shift[(e * R + r) * 3 + 2] * NG;

@@ -292,6 +292,53 @@ class TestCellSortVecEquivalence:
                 "vectorized cell_sort != reference"
 
 
+class TestCellSortDeviceEquivalence:
+    """The CUDA cell_sort must be array-bitwise identical to the scalar
+    reference (device port of the host bottleneck; 271x at 60k/R48).
+    Covers the overlap-dedup corner (wide replica-decorrelated hull
+    crossing the seam -> main and head runs share a block) that the first
+    device version got wrong."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("tc", [8, 12])
+    def test_device_equals_reference(self, seed, tc):
+        cp = pytest.importorskip("cupy")
+        ng, L = 32, 2.0
+        box = np.diag([L, L, L])
+        x, _ = _water_system(nw=12, r=3, seed=seed, box_len=L, jitter=0.3)
+        rng = np.random.default_rng(60 + seed)
+        x = x.copy()
+        x[::5] = rng.uniform(0.0, 0.03, x[::5].shape)
+        x[2::7] = rng.uniform(L - 0.03, L - 1e-12, x[2::7].shape)
+        out_r = pme.cell_sort_reference(x, box, ng, tc)
+        out_d = pme.cell_sort_device(cp.asarray(x), box, ng, tc)
+        for a, b in zip(out_r, out_d):
+            assert np.array_equal(np.asarray(a),
+                                  cp.asnumpy(b).astype(np.asarray(a).dtype)
+                                  if hasattr(b, "get") else np.asarray(b)), \
+                "device cell_sort != reference"
+
+    def test_device_decorrelated_replica_seam_overlap(self):
+        """Replica-decorrelated positions can span nearly the whole grid
+        per atom (hull ~ NG wide): main and head/tail runs overlap and
+        the host union dedups -- the device run-emitter must dedup too
+        (cursor rule), else E inflates and shifts scramble."""
+        cp = pytest.importorskip("cupy")
+        ng, L = 32, 2.0
+        box = np.diag([L, L, L])
+        rng = np.random.default_rng(9)
+        x = rng.uniform(0, L, (100, 4, 3))
+        x[:, 1, 0] = (x[:, 0, 0] + 0.9) % L   # replica 1 大偏移跨缝
+        x[:, 2, 1] = (x[:, 0, 1] + L / 2) % L  # replica 2 半盒偏移
+        out_r = pme.cell_sort_reference(x, box, ng, 8)
+        out_d = pme.cell_sort_device(cp.asarray(x), box, ng, 8)
+        for a, b in zip(out_r, out_d):
+            assert np.array_equal(np.asarray(a),
+                                  cp.asnumpy(b).astype(np.asarray(a).dtype)
+                                  if hasattr(b, "get") else np.asarray(b)), \
+                "device cell_sort != reference (overlap dedup)"
+
+
 class TestCellSort:
     @pytest.mark.parametrize("seed", [0, 1, 2])
     @pytest.mark.parametrize("tc", [8, 12])  # 12: tc does not divide 32

@@ -57,6 +57,7 @@ def kernel_source(ng: int = 128, tc: int = 12) -> str:
     assert 4 <= tc <= 16
     ts = tc + 3
     return _KERNEL_TMPL % {"ng": ng, "tc": tc, "ts": ts,
+                           "cc": -(-ng // tc),
                            "scale": repr(float(SCALE))}
 
 
@@ -64,6 +65,7 @@ _KERNEL_TMPL = r"""
 #define NG %(ng)d
 #define TC %(tc)d
 #define TS %(ts)d
+#define C %(cc)d
 
 // closed-form M4 weights + M3-difference derivative for interp_gather.
 // interp is DUAL-GATED (E0n: rel < 1e-10, not bitwise -- numpy pairwise
@@ -383,6 +385,156 @@ extern "C" __global__ void interp_gather(
     F[i * 3 + 1] = -(invly * (qi * sy));
     F[i * 3 + 2] = -(invlz * (qi * sz));
 }
+
+// ============ device cell_sort (bitwise == host _cell_sort_vec) ========
+// Port of the host vectorized cell assignment (the production host
+// bottleneck: ~1.1 s/step at 60k/R48 -- 4x the GPU step work).  All
+// integer ops; the only float section (anchor computation) uses the
+// IDENTICAL expressions as the host (fmod + sign fix + *NG + floor).
+// Floor division: all operands non-negative -> C '/' == numpy '//'.
+
+// stage A: per-atom anchors, per-dim block runs (seam-split), sorted
+// emission == boolean-matrix union order (increasing block id)
+extern "C" __global__ void cs_anchors(
+    const double* __restrict__ x,
+    int* __restrict__ B,      // (3, N, C) padded with -1 (host prefill)
+    int* __restrict__ cnt,    // (3, N)
+    int N, int R, double invlx, double invly, double invlz)
+{
+    int a = blockIdx.x * blockDim.x + threadIdx.x;
+    if (a >= N) return;
+    double invl[3] = {invlx, invly, invlz};
+    for (int d = 0; d < 3; ++d) {
+        int amin = NG, amax = -1;
+        for (int r = 0; r < R; ++r) {
+            double u = uwrap(x[((long long)a * R + r) * 3 + d] * invl[d]);
+            int au = (int)floor(u * (double)NG);
+            if (au < amin) amin = au;
+            if (au > amax) amax = au;
+        }
+        int klo = amin - 3, khi = amax;
+        // runs: main in-grid / head wrap (klo<0) / tail wrap (khi>=NG)
+        int plo[3], phi[3], nrun = 0;
+        int lo = klo > 0 ? klo : 0, hi = khi < NG - 1 ? khi : NG - 1;
+        if (hi >= lo) { plo[nrun] = lo / TC; phi[nrun] = hi / TC; ++nrun; }
+        if (klo < 0) {
+            plo[nrun] = (klo + NG) / TC; phi[nrun] = (NG - 1) / TC; ++nrun;
+        }
+        if (khi >= NG) { plo[nrun] = 0; phi[nrun] = (khi - NG) / TC; ++nrun; }
+        // emit in increasing first-block order (== boolean-matrix union);
+        // runs CAN overlap (wide replica-decorrelated hull crossing the
+        // seam: main [0..3] meets head [3..3]) -- the host union dedups,
+        // so emit with a last-emitted cursor
+        int* Ba = B + ((long long)d * N + a) * C;
+        int n_out = 0;
+        int last = -1;
+        for (int rep = 0; rep < nrun; ++rep) {
+            // pick the not-yet-emitted run with the smallest plo
+            int bi = -1;
+            for (int q2 = 0; q2 < nrun; ++q2) {
+                if (plo[q2] < 0) continue;
+                if (bi < 0 || plo[q2] < plo[bi]) bi = q2;
+            }
+            for (int b = plo[bi]; b <= phi[bi]; ++b) {
+                if (b > last) { Ba[n_out++] = b; last = b; }
+            }
+            plo[bi] = -1;
+        }
+        cnt[d * N + a] = n_out;
+    }
+}
+
+// stage B: per (atom, dim, slot) shift for every replica -- the
+// three-candidate max-overlap rule, candidate order (0, +1, -1), strict >
+// keeps the FIRST max on ties (identical to the host enumeration).
+extern "C" __global__ void cs_shifts(
+    const double* __restrict__ x,
+    const int* __restrict__ B, const int* __restrict__ cnt,
+    signed char* __restrict__ SX,     // (3, N, C, R)
+    int N, int R, double invlx, double invly, double invlz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;   // (a, d, s) flat
+    int ns_tot = N * 3 * C;
+    if (idx >= ns_tot) return;
+    int s = idx %% C;
+    int ad = idx / C;
+    int d = ad %% 3;
+    int a = ad / 3;
+    if (s >= cnt[d * N + a]) return;
+    int blk = B[((long long)d * N + a) * C + s];
+    int ox = blk * TC;
+    int w0 = ox - 1, w1 = ox + TC + 1;
+    double invl[3] = {invlx, invly, invlz};
+    signed char* out = SX + (((long long)d * N + a) * C + s) * R;
+    for (int r = 0; r < R; ++r) {
+        double u = uwrap(x[((long long)a * R + r) * 3 + d] * invl[d]);
+        int ka = (int)floor(u * (double)NG);
+        int lo0 = ka - 3, hi0 = ka;
+        int best = -1;
+        signed char bs = 0;
+        int sv0 = 0, sv1 = 1, svm = -1;
+        int ov0 = (hi0 + sv0 * NG < w1 ? hi0 + sv0 * NG : w1)
+                - (lo0 + sv0 * NG > w0 ? lo0 + sv0 * NG : w0) + 1;
+        int ov1 = (hi0 + sv1 * NG < w1 ? hi0 + sv1 * NG : w1)
+                - (lo0 + sv1 * NG > w0 ? lo0 + sv1 * NG : w0) + 1;
+        int ovm = (hi0 + svm * NG < w1 ? hi0 + svm * NG : w1)
+                - (lo0 + svm * NG > w0 ? lo0 + svm * NG : w0) + 1;
+        if (ov0 < 0) ov0 = 0;
+        if (ov1 < 0) ov1 = 0;
+        if (ovm < 0) ovm = 0;
+        if (ov0 > best) { best = ov0; bs = 0; }
+        if (ov1 > best) { best = ov1; bs = 1; }
+        if (ovm > best) { best = ovm; bs = -1; }
+        out[r] = bs;
+    }
+}
+
+// stage C: ragged cartesian expansion (per-entry enumeration order ==
+// itertools.product over the sorted per-dim block lists; key encodes
+// (cid, enum_idx) so ANY correct sort yields the unique bitwise order)
+extern "C" __global__ void cs_expand(
+    const int* __restrict__ B, const int* __restrict__ cnt,
+    const signed char* __restrict__ SX,
+    const long long* __restrict__ off,   // (N,) exclusive prefix of m_per
+    unsigned long long* __restrict__ keys,
+    int* __restrict__ atom_out, signed char* __restrict__ shift_out,
+    int* __restrict__ org_out, int* __restrict__ cid_out,
+    int N, int R, int E)
+{
+    int e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= E) return;
+    int lo = 0, hi = N - 1;
+    while (lo < hi) {
+        int mid = (lo + hi + 1) >> 1;
+        if (off[mid] <= (long long)e) lo = mid; else hi = mid - 1;
+    }
+    int a = lo;
+    int c0 = cnt[a], c1 = cnt[N + a], c2 = cnt[2 * N + a];
+    int w = e - (int)off[a];
+    int c12 = c1 * c2;
+    int i0 = w / c12;
+    int i1 = (w - i0 * c12) / c2;   // == (w mod c12) / c2, non-negative
+    int i2 = w - i0 * c12 - i1 * c2;
+    int bx = B[(0 * N + a) * C + i0];
+    int by = B[(1 * N + a) * C + i1];
+    int bz = B[(2 * N + a) * C + i2];
+    int cid = ((bx %% C) * C + (by %% C)) * C + (bz %% C);
+    keys[e] = ((unsigned long long)(unsigned)cid << 32) | (unsigned)e;
+    cid_out[e] = cid;
+    atom_out[e] = a;
+    org_out[e * 3] = bx * TC;
+    org_out[e * 3 + 1] = by * TC;
+    org_out[e * 3 + 2] = bz * TC;
+    const signed char* s0 = SX + (((0 * N + a) * C + i0) * R);
+    const signed char* s1 = SX + (((1 * N + a) * C + i1) * R);
+    const signed char* s2 = SX + (((2 * N + a) * C + i2) * R);
+    signed char* so = shift_out + (long long)e * R * 3;
+    for (int r = 0; r < R; ++r) {
+        so[r * 3] = s0[r];
+        so[r * 3 + 1] = s1[r];
+        so[r * 3 + 2] = s2[r];
+    }
+}
 """
 
 _SRC_CACHE: dict[tuple, object] = {}
@@ -399,6 +551,9 @@ def _module(ng: int, tc: int):
             mod.get_function("spread_v1"),
             mod.get_function("spread_tile"),
             mod.get_function("interp_gather"),
+            mod.get_function("cs_anchors"),
+            mod.get_function("cs_shifts"),
+            mod.get_function("cs_expand"),
         )
     return _SRC_CACHE[key]
 
@@ -631,6 +786,55 @@ def _cell_sort_vec(x: np.ndarray, box, ng: int, tc: int):
     return atom_e, shift, cs, ce, origin, int(len(used_ids))
 
 
+def cell_sort_device(x, box, ng: int, tc: int):
+    """Device cell assignment, array-bitwise == _cell_sort_vec (CI-pinned).
+
+    x: (N, R, 3) f64 DEVICE array.  Returns device arrays
+    (atom_idx (E,) int32, shift (E, R, 3) int8, cell_start/cell_end (nb,)
+    int32, cell_origin (nb, 3) int32, ncell_used) -- same values as the
+    host forms.  Sort keys are unique (cid, enum_idx) u64 pairs, so the
+    ordering is bitwise-deterministic regardless of the sort algorithm.
+    """
+    import cupy as cp
+    fns = _module(ng, tc)
+    k_a, k_s, k_e = fns[4], fns[5], fns[6]
+    N, R, _ = x.shape
+    C = -(-ng // tc)
+    inv = _inv_diag(box)
+    B = cp.full((3, N, C), -1, dtype=cp.int32)
+    cnt = cp.zeros((3, N), dtype=cp.int32)
+    k_a(((N + 255) // 256,), (256,),
+        (x, B, cnt, N, R, float(inv[0, 0]), float(inv[1, 1]),
+         float(inv[2, 2])))
+    SX = cp.zeros((3, N, C, R), dtype=cp.int8)
+    nst = N * 3 * C
+    k_s(((nst + 255) // 256,), (256,),
+        (x, B, cnt, SX, N, R, float(inv[0, 0]), float(inv[1, 1]),
+         float(inv[2, 2])))
+    m_per = cnt[0].astype(cp.int64) * cnt[1] * cnt[2]
+    off_incl = cp.cumsum(m_per)
+    E = int(off_incl[-1].get())          # one scalar sync (10-20 us)
+    off = off_incl - m_per
+    keys = cp.empty(E, dtype=cp.uint64)
+    atom_pre = cp.empty(E, dtype=cp.int32)
+    shift_pre = cp.empty((E, R, 3), dtype=cp.int8)
+    org_pre = cp.empty((E, 3), dtype=cp.int32)
+    cid_pre = cp.empty(E, dtype=cp.int32)
+    k_e(((E + 255) // 256,), (256,),
+        (B, cnt, SX, off, keys, atom_pre, shift_pre.reshape(-1),
+         org_pre.reshape(-1), cid_pre, N, R, E))
+    order = cp.argsort(keys)             # unique keys -> unique answer
+    atom_e = atom_pre[order]
+    shift = shift_pre[order]
+    org_sorted = org_pre[order]
+    cid_sorted = cid_pre[order]
+    used = cp.unique(cid_sorted)
+    cs = cp.searchsorted(cid_sorted, used).astype(cp.int32)
+    ce = cp.searchsorted(cid_sorted, used, side="right").astype(cp.int32)
+    origin = org_sorted[cs.astype(cp.int64)]
+    return atom_e, shift, cs, ce, origin, int(used.size)
+
+
 def spread(x, q, box, *, ng: int = 128, tc: int = 12, mode: str = "tile",
            block: int = 128):
     """Q16.48 charge grid (R, ng**3) int64, bitwise == opus.pme.spread.
@@ -639,29 +843,50 @@ def spread(x, q, box, *, ng: int = 128, tc: int = 12, mode: str = "tile",
     slower); mode='tile' is the production path (E0h2 shape, 2.78x)."""
     import cupy as cp
     assert mode in ("v1", "tile")
-    mod, k_v1, k_tile, _ = _module(ng, tc)
-    xh = np.ascontiguousarray(cp.asnumpy(x) if hasattr(x, "get") else x,
-                              dtype=np.float64)
-    qh = np.ascontiguousarray(cp.asnumpy(q) if hasattr(q, "get") else q,
-                              dtype=np.float64)
-    N, R, _ = xh.shape
+    mod, k_v1, k_tile, _k_interp, k_csa, k_css, k_cse = _module(ng, tc)
+    N, R = x.shape[0], x.shape[1]
     inv = _inv_diag(box)
     grid = cp.zeros(R * ng ** 3, dtype=cp.int64)
-    d_x, d_q = cp.asarray(xh), cp.asarray(qh)
+    # 设备输入走设备路径,避免 host 往返;宿主输入才下载一次
+    on_dev = hasattr(x, "get")
+    if on_dev:
+        d_x = x
+        d_q = q if hasattr(q, "get") else cp.asarray(
+            np.ascontiguousarray(q, dtype=np.float64))
+    else:
+        xh = np.ascontiguousarray(x, dtype=np.float64)
+        qh = np.ascontiguousarray(q, dtype=np.float64)
+        d_x, d_q = cp.asarray(xh), cp.asarray(qh)
     if mode == "v1":
         k_v1(((N * R + 255) // 256,), (256,),
              (d_x, d_q, grid, N, R, float(inv[0, 0]), float(inv[1, 1]),
               float(inv[2, 2]), float(SCALE)))
     else:
-        atom_e, shift, cs, ce, org, ncell = cell_sort(xh, box, ng, tc)
-        k_tile((max(ncell, 1) * R,), (block,),
-               (cp.asarray(np.ascontiguousarray(xh[atom_e])),
-                cp.asarray(np.ascontiguousarray(qh[atom_e])),
-                cp.asarray(shift),
-                cp.asarray(cs), cp.asarray(ce), cp.asarray(org.reshape(-1)),
-                grid, np.int32(ncell), np.int32(R),
-                float(inv[0, 0]), float(inv[1, 1]), float(inv[2, 2]),
-                float(SCALE)))
+        if hasattr(x, "get"):
+            # device input: cell assignment on device (no host roundtrip;
+            # array-bitwise == host cell_sort, CI-pinned)
+            atom_e, shift, cs, ce, org, ncell = cell_sort_device(
+                x, box, ng, tc)
+            aidx = atom_e.astype(cp.int64)
+            xs_s = d_x[aidx]
+            qs_s = d_q[aidx]
+            k_tile((max(ncell, 1) * R,), (block,),
+                   (xs_s, qs_s, shift, cs, ce,
+                    org.reshape(-1),
+                    grid, np.int32(ncell), np.int32(R),
+                    float(inv[0, 0]), float(inv[1, 1]), float(inv[2, 2]),
+                    float(SCALE)))
+        else:
+            atom_e, shift, cs, ce, org, ncell = cell_sort(xh, box, ng, tc)
+            k_tile((max(ncell, 1) * R,), (block,),
+                   (cp.asarray(np.ascontiguousarray(xh[atom_e])),
+                    cp.asarray(np.ascontiguousarray(qh[atom_e])),
+                    cp.asarray(shift),
+                    cp.asarray(cs), cp.asarray(ce),
+                    cp.asarray(org.reshape(-1)),
+                    grid, np.int32(ncell), np.int32(R),
+                    float(inv[0, 0]), float(inv[1, 1]), float(inv[2, 2]),
+                    float(SCALE)))
     cp.cuda.Stream.null.synchronize()
     return grid.reshape(R, ng, ng, ng)
 
@@ -673,7 +898,7 @@ def interp_forces(x, q, pot, box, *, ng: int = 128):
     (production: cuFFT chain; alignment: numpy chain).  Dual gate vs opus
     (sequential vs pairwise 64-point sum); sign/gradient semantics exact."""
     import cupy as cp
-    _, _, _, k_interp = _module(ng, 12)
+    _, _, _, k_interp, _csa, _css, _cse = _module(ng, 12)
     dev = lambda a: cp.asarray(np.ascontiguousarray(a, dtype=np.float64)) \
         if not (hasattr(a, "get")) else cp.ascontiguousarray(a, np.float64)
     x = dev(x)

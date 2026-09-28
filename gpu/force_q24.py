@@ -102,11 +102,14 @@ extern "C" __global__ void direct_q(
         // clamp bound: float(2^63-1) rounds UP to 2^63, whose llrint
         // overflows int64 (asymmetric INT64_MIN garbage, Newton-3 breaks).
         // Guard AND saturate at +/-2^62 -- exactly representable, sticky
-        // semantics, bitwise-portable across device/host/opus (2026-09-18:
-        // unified with the opus add_to fix; was guard-at-2^63 which left
-        // the (2^62, 2^63] band divergent vs host).
+        // semantics, bitwise-portable across device/host/opus.
+        // NOTE: vmaxd * 0.25 is 2^61, NOT 2^62 -- the phase-3 comment said
+        // 2^62 but the code clamped 2^61 for three years of sessions;
+        // caught by the 2026-09-18 deep review (test_bitwise_vs_mirror
+        // sticky failure; the claimed four-layer unification was silently
+        // one binade off on the device side).
         double sx = fx * scale, sy = fy * scale, sz = fz * scale;
-        double bnd = vmaxd * 0.25;  // 2^62
+        double bnd = vmaxd * 0.5;  // 2^62
         if (!(fabs(sx) <= bnd)) {
             atomicAdd(sticky, 1);
             sx = (sx > 0.0) ? bnd : -bnd;

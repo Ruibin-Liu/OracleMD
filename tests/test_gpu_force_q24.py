@@ -281,12 +281,27 @@ class TestDirectQKernel:
     def test_bitwise_vs_mirror_alpha0(self):
         cupy = pytest.importorskip("cupy")
         nw, r, L = 10, 2, 2.0
-        x = water_cluster(nw, r, seed=9, box_len=L)
+        # min_sep=0.45 (envelope discipline, as the mirror tests at 206/227):
+        # the default 0.3 lets H..H pairs reach r~0.11 with random sig up
+        # to 0.4 -> |scaled| in (2^62, 2^63] which the unified +/-2^62
+        # saturation guard flags (sticky != 0) -- this test's declared
+        # regime is clean-envelope (file header)
+        x = water_cluster(nw, r, seed=9, box_len=L, min_sep=0.45)
         rng = np.random.default_rng(10)
         n = nw * 3
         q, sig, eps = rng.uniform(-1, 1, n), rng.uniform(.2, .4, n), \
             rng.uniform(.1, .6, n)
-        pairs = full_pairs(n)
+        # inter-molecular pairs ONLY (production: bonded pairs are
+        # exclusions; same discipline as TestMirrorKernel above -- the
+        # phase-3 version used full_pairs and could never have passed on
+        # a GPU: intra O-H at r~0.096 with sig~0.3 gives |scaled|~1e20,
+        # sticky != 0 under ANY guard.  Never caught because the test is
+        # GPU-gated and the pod runs used the e0-rigs, not pytest.)
+        pairs = [(i, j) for i in range(n) for j in range(i + 1, n)
+                 if i // 3 != j // 3]
+        assert min_atom_sep(x, np.diag([L, L, L]),
+                            lambda i, j: i // 3 == j // 3) > 0.18, \
+            "test system left the envelope"
         nlist, ncnt = _lists(n, pairs)
         ref, _ = force_q24.direct_q_mirror_kernel(
             x, q, sig, eps, nlist, ncnt, 0.0, 0.6, box=np.diag([L, L, L]))

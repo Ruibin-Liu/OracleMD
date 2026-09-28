@@ -813,6 +813,18 @@ A/B 交替计时(同进程、共租户同污染、比值有效):`-prec-div=false
 
 **spec 影响**:v1.1.8 地板表 spread/回插行的口径注已按此更正(E 计数误报收回)。
 
+---
+
+# 深度评审(2026-09-18 晚):两个潜伏缺陷落网 + GPU 测试缺口闭合(65/65)
+
+**背景**:用户要求对当日全部改动深度 review;fusion 多模型评审因基础设施竞争失败(session_shutdown 抢杀子进程),改为结构化手工深评 + 补跑 GPU 测试。**发现一:本地无 GPU ⇒ 当日四个 GPU 测试模块自改动后从未真正执行**(E0n/E0o/∀K 覆盖同一批生产函数但不含 pytest 设备测试)——写 `/root/run_gpu_tests.py`(pytest stub:importorskip/fixture/mark.parametrize 多层叠加/monkeypatch/raises)在 pod 补跑 34 个测试 65 个用例。
+
+**发现二(真 bug,阶段三起潜伏三个会话)**:`gpu/force_q24.py` 设备核 `bnd = vmaxd * 0.25` —— vmaxd = float(2^63−1) = 2^63,**×0.25 = 2^61,注释却写着「2^62」**——饱和钳位实饵 ±2^61 达三个会屯;当日「四层统一」首目继承了这个错误注释(设备层 2^61、宿主层 2^62,统一声明是假的)。修正 ×0.5 = 2^62,四层统一至此为真。
+
+**发现三(潜伏测试 bug,从未在 GPU 上跑过)**:`test_bitwise_vs_mirror_alpha0` 用 `full_pairs`(含分子内 O-H 对,r~0.096 配 sig~0.3 → |scaled|~1e20 ≫ 2^63)——**任何 guard 下 sticky 都非零,该测试按构造不可能通过**;它 GPU-gated 且 pod 跑的是 e0-rigs 非 pytest → 潜伏至今。修正:分子间对 + min_sep=0.45 + `min_atom_sep > 0.18` 包络断言(与其兄弟测试 TestMirrorKernel 文件内写明的纪律对齐: bonded pairs are exclusions)。
+
+**验证**:bnd 修正 + 测试修正后 pod 全量补跑 **65 passed / 0 failed / 0 skipped**(含当日新增 TestCellSortDeviceEquivalence 7 用例);E0o 柱门 + ∀K 复跑全绿(bnd 只影响饱和路径,包络内行为不变,门验证确认)。**方法论**:GPU-gated 测试的「从未执行」是盲区本身——位级门体系(e0-rigs)与 pytest 设备测试是两条互补防线,当日改动只有前者在岗;stub 驱动补跑已制度化(/root/run_gpu_tests.py)。转录陷阱第 10 类候选:**注释与代码的量纲/幂次错位**(×0.25 vs 2^62 注释,三年会话无人复核幂次)。
+
 **方法论**:时序台本不只是性能门——385 ms 的自旋在值级门上是隐形的(概率 0.03% × 值形状「像」极端高斯);性能 oracle 是分布/低概率路径的最后一道防线。转录陷阱库第 9 类:**C 无符号一元负号回绕**(`-(u64 expr) × const` ≠ `-(double)(expr) × const`);防线:对拍时构造**必然命中尾部的 tuple**(极值路径探测,如同接缝应力原子之于 cell_sort)。
 
 ---
